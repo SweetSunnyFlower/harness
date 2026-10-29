@@ -30,4 +30,6 @@
 - 契约测试覆盖 spec §10 与 §11.1 Memory 的全部语义；同一测试函数以共享 runner 形式编写，供 1D/1E 后端复用。
 - 文档物化用 `delta.ApplyImmutableBatches`；current-only 与 rewindable 的历史/退休/回收行为与 TS 对齐。
 
-完成后进入 1D SQLite 与 1E JSONL 后端。
+执行记录：实现提交 `195726f`。`harness/storage` 交付 Storage 接口与 Memory 参考后端，契约测试以外部包 `storage_test` 编写覆盖原子提交/ID 命名空间、扫描游标、fork 可见性与 head 祖先链、任务/提交扫描与请求去重、文档生命周期/物化/复制/current-only 历史、读隔离。验证：`go test ./... -count=1`、`go vet ./...`、`go test -race ./... -count=1`、`CGO_ENABLED=0 go test ./... -count=1` 全部通过。实现过程中修正了两处保真细节：分页游标取最后“返回”项的 ID 而非最后收集项；同地址“退休旧+新建”在同一批次内按净计数判定，不误报为双当前。
+
+完成后进入 1D SQLite 与 1E JSONL 后端，复用本契约测试。

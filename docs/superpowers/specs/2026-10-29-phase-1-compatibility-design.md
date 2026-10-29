@@ -4,11 +4,13 @@
 
 此文档展开总设计第一阶段，不改变功能范围。第一阶段由六个依次衔接的子项目组成；当前完整可执行计划覆盖 1A。后续子项目在其接口设计完成后分别编写执行计划，不以本文件的交付顺序代替实现步骤。
 
-执行状态：1A 数据边界与 1B 全部（Chord delta 引擎 + 五类记录类型）已实现；1C–1F 尚未实现。Go 标准库单元测试、竞态检测及开发期 JavaScript 语义夹具均已通过；这些结果不构成 Storage 或 Agent 恢复能力的验收。
+执行状态：1A、1B（Chord delta + 五类记录）与 1C 的 Storage 契约及 Memory 后端已实现；1D SQLite、1E JSONL、1F 综合验证及后续阶段尚未实现。Go 标准库单元测试、竞态检测及开发期 JavaScript 语义夹具均已通过；这些结果不构成 Agent 恢复能力的验收。
 
 1B delta 已交付：`harness/delta` 覆盖 Op/WireOp 模型与校验、可变/不可变 Apply（r/s/d/a/t/p/m，含 splice 钳制、UTF-16 截断、路径安全与副本所有权）、Enc/Decode（第二次使用才建字典、Replace 重置、短形式仅限单批）与保守 DiffRevisions。线上格式经独立 Node 解码器+应用器对 8 个向量重放验证通过；操作只承诺值等价，不承诺与 TypeScript 逐字节一致，符合“操作非规范”约束。语义参考为固定 TS 基线 `e65b3b88` 与 MIT 许可的 sky-valley/pi `chord/delta`（仅作参考与测试向量来源，非运行依赖）。
 
 1B 记录类型已交付：`harness/record` 覆盖 Conversation/Entry/Submission/Task/Document 五类记录，字段名与判别联合对齐固定 TS 基线。opaque JSON 字段（model/data/trace/links/input/checkpoint/result/detail/memos 及 on）用 `json.RawMessage` 原样承载以保留空数组与 null；未知成员经 Extra 合并保留，Go 解码再编码不丢未知内容。各类型提供 `Validate()` 校验身份、判别符与联合不变式，非法 ID 同时保留 `record.ErrRecord` 与 `protocol.ErrID` 错误链。记录层只解释身份与索引标量，输入/检查点等由上层解释。
+
+1C 存储已交付：`harness/storage` 定义 Storage 接口（原子提交、ID 分配、分页扫描、条目可见性、head 标记、请求去重、文档物化）与 Memory 参考后端。Memory 忠实移植固定 TS 基线的 memory.ts，读写返回深拷贝隔离，文档 base/delta 用 `delta.ApplyImmutableBatches` 物化，覆盖 current-only/rewindable 历史、退休、复制与同地址替换。契约测试以公共 API 编写，供 1D/1E 后端复用。记录字段结构已导出以便外部构造。
 
 ## 1. 子项目与依赖
 
