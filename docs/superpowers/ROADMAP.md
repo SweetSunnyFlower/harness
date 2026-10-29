@@ -8,7 +8,7 @@
 | 1B delta | harness/delta（Op/WireOp/apply/codec/diff） | ✅ 提交 1ca5630 |
 | 1B 记录 | harness/record（五类记录 + unknown 保留） | ✅ 提交 94b0668 |
 | 1C 存储 | harness/storage（契约 + Memory） | ✅ 提交 195726f |
-| 1D SQLite | schema v2 迁移、全部查询、文档 base/delta | 🔨 进行中 |
+| 1D SQLite | schema v2 迁移、全部查询、文档 base/delta | 🟡 共享契约通过；仍有已知缺口 |
 | 1E JSONL | main/sidecar、恢复、回收、fsync | 待办 |
 | 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 待办 |
 | 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 待办 |
@@ -18,3 +18,10 @@
 | 5 Code Mode 与平台 | Go WASM、脚本重放、平台后端 | 待办 |
 
 验证口径：每个阶段 `go test ./... -count=1`、`go vet ./...`、`go test -race ./... -count=1`、`CGO_ENABLED=0 go test ./... -count=1` 全绿才标完成；跨语言项另跑 Node 对照。终端目标：完整能力清单验收，不跳过平台适配或 Code Mode。
+
+## SQLite 已知缺口（不视为 1D 完成）
+
+- 游标分页仅实现于 conversations 扫描；tasks/submissions/documents 扫描尚未应用游标或返回 Next。
+- 文档“同地址双当前”检查中的当前文档查询仍是占位（返回 nil），可能漏报同地址并发创建。
+- rewindable 文档的 base 变更应追加新 base 而非删除旧 revision；当前实现仅 current-only 正确。
+- 尚未加入 schema v1→v2 迁移测试，也尚未做 TS↔Go 的 SQLite 文件级双向互操作验证（属 1F）。
