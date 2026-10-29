@@ -274,7 +274,7 @@ func (s *Store) applyWriteTx(tx *sql.Tx, w storage.Write, seq protocol.Seq) erro
 			rec.ID, rec.Kind, family, keyVal, scopeKind, ownerID, rec.CreatedAt, retired, string(b)); err != nil {
 			return err
 		}
-		content, err := json.Marshal(w.Content)
+		content, err := marshalContent(w.Content)
 		if err != nil {
 			return err
 		}
@@ -282,7 +282,7 @@ func (s *Store) applyWriteTx(tx *sql.Tx, w storage.Write, seq protocol.Seq) erro
 			w.Record.ID, seq, w.Content.Kind, w.Content.Version, string(content))
 		return err
 	case storage.DocumentChangeWrite:
-		content, err := json.Marshal(w.Content)
+		content, err := marshalContent(w.Content)
 		if err != nil {
 			return err
 		}
@@ -683,8 +683,8 @@ func (s *Store) Document(ctx context.Context, id protocol.DocumentID, at storage
 	if err != nil {
 		return nil, err
 	}
-	var base storage.DocumentContent
-	if err := json.Unmarshal([]byte(baseContent), &base); err != nil {
+	var baseValue any
+	if err := json.Unmarshal([]byte(baseContent), &baseValue); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT content, kind, version FROM document_revisions WHERE document_id = ? AND seq > ? AND seq <= ? ORDER BY seq`, id, baseSeq, upper)
@@ -699,20 +699,43 @@ func (s *Store) Document(ctx context.Context, id protocol.DocumentID, at storage
 		if err := rows.Scan(&content, &revKind, &version); err != nil {
 			return nil, err
 		}
-		if revKind != "delta" || float64(version) != base.Version {
+		if revKind != "delta" || float64(version) != float64(baseVersion) {
 			return nil, fmt.Errorf("document %d crosses a stored version boundary without a base", id)
 		}
-		var rev storage.DocumentContent
-		if err := json.Unmarshal([]byte(content), &rev); err != nil {
+		ops, err := unmarshalOps([]byte(content))
+		if err != nil {
 			return nil, err
 		}
-		batches = append(batches, rev.Ops)
+		batches = append(batches, ops)
 	}
-	value, err := delta.ApplyImmutableBatches(base.Value, batches)
+	value, err := delta.ApplyImmutableBatches(baseValue, batches)
 	if err != nil {
 		return nil, err
 	}
-	return &storage.StoredDocument{Record: rec, Version: base.Version, Value: value, DeltasSinceBase: len(batches)}, nil
+	return &storage.StoredDocument{Record: rec, Version: float64(baseVersion), Value: value, DeltasSinceBase: len(batches)}, nil
+}
+
+func marshalContent(c storage.DocumentContent) ([]byte, error) {
+	if c.Kind == "base" {
+		return json.Marshal(c.Value)
+	}
+	return json.Marshal(c.Ops)
+}
+
+func unmarshalOps(data []byte) ([]delta.Op, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	ops := make([]delta.Op, 0, len(raw))
+	for _, r := range raw {
+		op, err := delta.UnmarshalOp(r)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, op)
+	}
+	return ops, nil
 }
 
 func (s *Store) ScanDocuments(ctx context.Context, q storage.DocumentQuery, limit int, cursor storage.Cursor) (storage.Page[record.DocumentRecord], error) {

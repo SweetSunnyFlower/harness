@@ -29,6 +29,10 @@ func main() {
 		panic(err)
 	}
 	commit(sq, writes)
+	commit(sq, []storage.Write{storage.DocumentChangeWrite{
+		ID:      10,
+		Content: storage.DocumentContent{Version: 1, Kind: "delta", Ops: []delta.Op{delta.Set{Path: delta.Path{delta.Key("v")}, Value: 2.0}}},
+	}})
 	if err := sq.Close(ctx); err != nil {
 		panic(err)
 	}

@@ -595,7 +595,7 @@ func (s *Store) applyDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq p
 			if _, err := tx.Exec(`INSERT OR REPLACE INTO record_ids (id, record_type) VALUES (?, 'document')`, w.Record.ID); err != nil {
 				return err
 			}
-			b, err := json.Marshal(w.Content)
+			b, err := marshalContent(w.Content)
 			if err != nil {
 				return err
 			}
@@ -608,7 +608,7 @@ func (s *Store) applyDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq p
 			if err != nil {
 				return err
 			}
-			b, err := json.Marshal(w.Content)
+			b, err := marshalContent(w.Content)
 			if err != nil {
 				return err
 			}
@@ -740,8 +740,8 @@ func (s *Store) materialize(ctx context.Context, id protocol.DocumentID, at stor
 	if err != nil {
 		return nil, err
 	}
-	var base storage.DocumentContent
-	if err := json.Unmarshal([]byte(baseContent), &base); err != nil {
+	var baseValue any
+	if err := json.Unmarshal([]byte(baseContent), &baseValue); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.Query(`SELECT content, kind, version FROM document_revisions WHERE document_id = ? AND seq > ? AND seq <= ? ORDER BY seq`, id, baseSeq, upper)
@@ -756,23 +756,46 @@ func (s *Store) materialize(ctx context.Context, id protocol.DocumentID, at stor
 		if err := rows.Scan(&content, &revKind, &version); err != nil {
 			return nil, err
 		}
-		if revKind != "delta" || float64(version) != base.Version {
+		if revKind != "delta" || float64(version) != float64(baseVersion) {
 			return nil, fmt.Errorf("document %d crosses a stored version boundary without a base", id)
 		}
-		var rev storage.DocumentContent
-		if err := json.Unmarshal([]byte(content), &rev); err != nil {
+		ops, err := unmarshalOps([]byte(content))
+		if err != nil {
 			return nil, err
 		}
-		batches = append(batches, rev.Ops)
+		batches = append(batches, ops)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	value, err := delta.ApplyImmutableBatches(base.Value, batches)
+	value, err := delta.ApplyImmutableBatches(baseValue, batches)
 	if err != nil {
 		return nil, err
 	}
-	return &storage.StoredDocument{Record: rec, Version: base.Version, Value: value, DeltasSinceBase: len(batches)}, nil
+	return &storage.StoredDocument{Record: rec, Version: float64(baseVersion), Value: value, DeltasSinceBase: len(batches)}, nil
+}
+
+func marshalContent(c storage.DocumentContent) ([]byte, error) {
+	if c.Kind == "base" {
+		return json.Marshal(c.Value)
+	}
+	return json.Marshal(c.Ops)
+}
+
+func unmarshalOps(data []byte) ([]delta.Op, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	ops := make([]delta.Op, 0, len(raw))
+	for _, r := range raw {
+		op, err := delta.UnmarshalOp(r)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, op)
+	}
+	return ops, nil
 }
 
 func aliveAt(r record.DocumentRecord, at storage.DocumentPoint) bool {
