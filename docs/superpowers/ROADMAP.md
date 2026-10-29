@@ -10,7 +10,7 @@
 | 1C 存储 | harness/storage（契约 + Memory） | ✅ 提交 195726f |
 | 1D SQLite | schema v2 迁移、全部查询、文档 base/delta | ✅ 契约+迁移测试通过；TS 文件级互操作属 1F |
 | 1E JSONL | main/sidecar、恢复、回收、fsync | 🟡 契约+重开通过；回收/fsync 未实现 |
-| 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 待办 |
+| 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 🟡 已实现并编译；未对真实服务器验证 |
 | 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 待办 |
 | 2 持久化内核 | Session、事务、fork、任务树、调度、取消、恢复 | 待办 |
 | 3 Agent 运行时 | 模型、输入队列、生成/工具循环、压缩、事件、用量 | 待办 |
@@ -28,3 +28,8 @@
 
 - 实现 format v1 main.jsonl 提交标记 + task/doc sidecar、重开恢复与撕裂尾行处理，通过共享契约与重开测试。
 - 尚未实现：sidecar 回收（reclaim）与 fsync 模式，属规范 §11.3 的持久化强度要求；TS↔Go 文件级互操作属 1F。
+
+## 1G 完成说明
+
+- `harness/storage/mysql` 已实现 Storage 接口（go-sql-driver/mysql，纯 Go），DDL 与查询对齐 SQLite 语义，适配 MySQL 方言（REPLACE INTO/INSERT IGNORE、无 STRICT/CHECK/partial index、LONGTEXT 存 JSON）。
+- 契约测试通过 `MYSQL_DSN` 环境变量 opt-in；本机无 MySQL 服务，未对真实服务器运行，故不标为完成。待有服务器时设 DSN 跑 `go test ./storage/mysql -count=1`。
