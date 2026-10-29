@@ -2,8 +2,11 @@ package session
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sync"
 
+	"harness/delta"
 	"harness/protocol"
 	"harness/record"
 	"harness/storage"
@@ -23,7 +26,7 @@ func New(store storage.Storage) *Session {
 func (s *Session) Commit(ctx context.Context, change func(tx *Tx) error) (protocol.Seq, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx := &Tx{}
+	tx := &Tx{store: s.store}
 	if change != nil {
 		if err := change(tx); err != nil {
 			return 0, err
@@ -41,6 +44,7 @@ func (s *Session) MintID(ctx context.Context) (protocol.RecordID, error) {
 // Tx accumulates writes for one atomic commit.
 type Tx struct {
 	writes []storage.Write
+	store  storage.Storage
 }
 
 func (t *Tx) Conversation(rec record.ConversationRecord) {
@@ -69,6 +73,51 @@ func (t *Tx) ChangeDocument(id protocol.DocumentID, content storage.DocumentCont
 
 func (t *Tx) RetireDocument(id protocol.DocumentID) {
 	t.writes = append(t.writes, storage.DocumentRetireWrite{ID: id})
+}
+
+// Document reads the committed value of a document incarnation through the
+// mutation line.
+func (t *Tx) Document(ctx context.Context, id protocol.DocumentID, at storage.DocumentPoint) (*storage.StoredDocument, error) {
+	return t.store.Document(ctx, id, at)
+}
+
+// EditDocument reads the current document value, hands fn a detached copy,
+// and records the diff as a document change. It works only on an existing
+// incarnation; new incarnations use CreateDocument.
+func (t *Tx) EditDocument(ctx context.Context, id protocol.DocumentID, fn func(current any) (any, error)) error {
+	doc, err := t.store.Document(ctx, id, storage.CurrentPoint())
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return fmt.Errorf("document %d does not exist", id)
+	}
+	current := cloneAny(doc.Value)
+	next, err := fn(current)
+	if err != nil {
+		return err
+	}
+	ops := delta.DiffRevisions(doc.Value, next)
+	if len(ops) == 0 {
+		return nil
+	}
+	t.writes = append(t.writes, storage.DocumentChangeWrite{
+		ID:      id,
+		Content: storage.DocumentContent{Version: doc.Version, Kind: "delta", Ops: ops},
+	})
+	return nil
+}
+
+func cloneAny(v any) any {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return v
+	}
+	return out
 }
 
 // ── Reads ──────────────────────────────────────────────────────────────────

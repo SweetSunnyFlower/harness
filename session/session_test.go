@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -70,5 +71,43 @@ func TestSerializedCommits(t *testing.T) {
 			t.Fatalf("duplicate seq %d", seq)
 		}
 		seen[seq] = true
+	}
+}
+
+func TestEditDocumentProducesDelta(t *testing.T) {
+	ctx := context.Background()
+	s := session.New(storage.NewMemory())
+	conv := protocol.ConversationID(1)
+	if _, err := s.Commit(ctx, func(tx *session.Tx) error {
+		tx.Conversation(record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}})
+		tx.CreateDocument(
+			record.DocumentCreate{DocumentCreateFields: record.DocumentCreateFields{
+				ID: 10, Kind: "app.doc",
+				Scope:   record.DocumentScope{DocumentScopeFields: record.DocumentScopeFields{Kind: "conversation", ConversationID: &conv}},
+				History: "rewindable", Fork: "asOf",
+			}},
+			storage.DocumentContent{Version: 1, Kind: "base", Value: map[string]any{"v": 1.0}},
+		)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(ctx, func(tx *session.Tx) error {
+		return tx.EditDocument(ctx, 10, func(current any) (any, error) {
+			m := current.(map[string]any)
+			m["v"] = 2.0
+			m["extra"] = "x"
+			return m, nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := s.Document(ctx, 10, storage.CurrentPoint())
+	if err != nil || doc == nil {
+		t.Fatalf("doc %v %v", doc, err)
+	}
+	want := map[string]any{"v": 2.0, "extra": "x"}
+	if !reflect.DeepEqual(doc.Value, want) {
+		t.Fatalf("value %v want %v", doc.Value, want)
 	}
 }
