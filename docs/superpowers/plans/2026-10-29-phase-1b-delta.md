@@ -25,6 +25,8 @@
 
 任务严格按 1→2→3→4→5 顺序执行。每项先写失败测试并观察 RED，再写最小实现到 GREEN，运行全套后提交。`git diff --check` 与 `go test ./... -count=1` 在每次提交前必须干净。
 
+执行记录：五个任务已按实现文件一次性交付并验证。实现提交为 `1ca5630`。验证结果：`go test ./... -count=1`、`go vet ./...`、`go test -race ./... -count=1`、`CGO_ENABLED=0 go test ./... -count=1` 全部通过；`go run ./tools/compat/emit-delta` 生成 8 批线上操作，`node tools/compat/check-delta.mjs` 独立解码并应用，8/8 与期望一致。计划中的 `parseCount` 已按 JS 语义改为非负整数饱和钳制而非拒绝大值；`Decoder.Decode` 返回 `([]Op, error)` 而非 panic；`walk`/`descend` 区分叶子预复制与 splice 追加优化。
+
 ## 文件布局
 
 | 文件 | 职责 |
