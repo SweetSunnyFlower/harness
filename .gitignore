@@ -1,0 +1,3 @@
+# Generated cross-language fixture; recreate with:
+#   go run ./tools/compat/emit-delta
+delta/testdata/emitted-delta.json

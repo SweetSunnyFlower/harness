@@ -1,0 +1,10 @@
+[
+  {"before":{"a":1},"after":{"a":1,"b":2}},
+  {"before":{"a":1,"b":2},"after":{"a":1}},
+  {"before":{"s":"abc"},"after":{"s":"abcdef"}},
+  {"before":{"s":"abc"},"after":{"s":"xyz"}},
+  {"before":{"xs":[1,2]},"after":{"xs":[1,3]}},
+  {"before":{"obj":{"keep":true,"gone":1},"items":[1,2,3]},"after":{"obj":{"keep":true,"new":"v"},"items":[1,9,3]}},
+  {"before":1,"after":2},
+  {"before":{"n":1},"after":{"n":1}}
+]
