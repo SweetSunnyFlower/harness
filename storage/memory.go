@@ -93,10 +93,11 @@ func (m *Memory) Commit(ctx context.Context, writes []Write, adopt func(protocol
 	if err := m.assertOpen(); err != nil {
 		return 0, err
 	}
-	seq, err := m.prepareAndApply(writes)
+	p, err := m.Prepare(writes)
 	if err != nil {
 		return 0, err
 	}
+	seq := m.Apply(p)
 	adopt(seq)
 	return seq, nil
 }
@@ -110,29 +111,50 @@ func (m *Memory) MintID(ctx context.Context) (protocol.RecordID, error) {
 	return id, nil
 }
 
-func (m *Memory) prepareAndApply(writes []Write) (protocol.Seq, error) {
+// Prepared is a validated, detached batch ready to apply exactly once.
+type Prepared struct {
+	seq      protocol.Seq
+	detached []Write
+	actions  map[protocol.DocumentID]*documentAction
+}
+
+// Seq returns the sequence this batch will commit with.
+func (p *Prepared) Seq() protocol.Seq { return p.seq }
+
+// Writes returns the detached writes to persist. The slice is owned by the
+// Prepared and must not be mutated.
+func (p *Prepared) Writes() []Write { return p.detached }
+
+// Prepare validates and detaches one batch without changing observable state.
+func (m *Memory) Prepare(writes []Write) (*Prepared, error) {
 	detached, err := cloneWrites(writes)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := m.checkGlobalIDs(detached); err != nil {
-		return 0, err
+		return nil, err
 	}
 	resolved, err := m.resolveDocumentCopies(detached)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	actions, err := m.prepareDocumentActions(resolved)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if err := m.checkDocumentActions(actions); err != nil {
-		return 0, err
+		return nil, err
 	}
 	seq := m.nextSeq
-	m.applyPrepared(resolved, actions, seq)
-	m.nextSeq = seq + 1
-	return seq, nil
+	return &Prepared{seq: seq, detached: resolved, actions: actions}, nil
+}
+
+// Apply commits a prepared batch, mutating the store and advancing the
+// sequence. It must be called at most once per Prepared.
+func (m *Memory) Apply(p *Prepared) protocol.Seq {
+	m.applyPrepared(p.detached, p.actions, p.seq)
+	m.nextSeq = p.seq + 1
+	return p.seq
 }
 
 func (m *Memory) applyPrepared(writes []Write, actions map[protocol.DocumentID]*documentAction, seq protocol.Seq) {
