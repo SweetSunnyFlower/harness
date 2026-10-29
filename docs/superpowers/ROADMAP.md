@@ -11,7 +11,7 @@
 | 1D SQLite | schema v2 迁移、全部查询、文档 base/delta | ✅ 契约+迁移测试通过；TS 文件级互操作属 1F |
 | 1E JSONL | main/sidecar、恢复、回收、fsync | ✅ 契约/重开/回收/fsync 通过；TS 互操作属 1F |
 | 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 🟡 已实现并编译；未对真实服务器验证 |
-| 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 待办 |
+| 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 🟡 SQLite schema 与 JSONL 格式互操作已验；TS 包级互操作/矩阵/基准待办 |
 | 2 持久化内核 | Session、事务、fork、任务树、调度、取消、恢复 | 待办 |
 | 3 Agent 运行时 | 模型、输入队列、生成/工具循环、压缩、事件、用量 | 待办 |
 | 4 完整扩展 | Registry、Hooks、热更新、嵌套工具、内置工具、搜索、图像、遥测 | 待办 |
@@ -33,3 +33,8 @@
 
 - `harness/storage/mysql` 已实现 Storage 接口（go-sql-driver/mysql，纯 Go），DDL 与查询对齐 SQLite 语义，适配 MySQL 方言（REPLACE INTO/INSERT IGNORE、无 STRICT/CHECK/partial index、LONGTEXT 存 JSON）。
 - 契约测试通过 `MYSQL_DSN` 环境变量 opt-in；本机无 MySQL 服务，未对真实服务器运行，故不标为完成。待有服务器时设 DSN 跑 `go test ./storage/mysql -count=1`。
+
+## 1F 进行中
+
+- `tools/compat/emit-interop` + `tools/compat/check-interop.mjs`：Go 写出 SQLite/JSONL，Node 用内置 SQLite 与独立 JS 重放核对。SQLite 表/索引名与上游一致；JSONL format v1 + (file,seq,ordinal) sidecar 引用经 JS 重放得到期望文档值。
+- 尚未做：直接运行 TS pi-durable 包的双向互操作、完整兼容矩阵与基准。

@@ -39,6 +39,9 @@ type Options struct {
 }
 
 func OpenWithOptions(dir string, opts Options) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
 	s := &Store{
 		mem:                  storage.NewMemory(),
 		dir:                  dir,
@@ -108,7 +111,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 		Type    string                 `json:"type"`
 		Value   json.RawMessage        `json:"value,omitempty"`
 		ID      protocol.DocumentID    `json:"id,omitempty"`
-		Ordinal int                    `json:"ordinal,omitempty"`
+		Ordinal *int                   `json:"ordinal,omitempty"`
 		Record  *record.DocumentCreate `json:"record,omitempty"`
 	}
 	ops := make([]mainOp, 0, len(writes))
@@ -146,7 +149,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 				ordinal := nextOrdinal
 				nextOrdinal++
 				sidecars[name] = append(sidecars[name], s.sidecarLine(seq, ordinal, map[string]any{"type": "task", "value": json.RawMessage(b)})...)
-				ops = append(ops, mainOp{Type: "task.sidecar", ID: protocol.DocumentID(w.Value.ID), Ordinal: ordinal})
+				ops = append(ops, mainOp{Type: "task.sidecar", ID: protocol.DocumentID(w.Value.ID), Ordinal: &ordinal})
 			}
 		case storage.DocumentCreateWrite:
 			content, err := json.Marshal(w.Content)
@@ -158,7 +161,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 			nextOrdinal++
 			sidecars[name] = append(sidecars[name], s.sidecarLine(seq, ordinal, map[string]any{"type": "document", "id": w.Record.ID, "content": json.RawMessage(content)})...)
 			rec := w.Record
-			ops = append(ops, mainOp{Type: "document.create", Record: &rec, Ordinal: ordinal})
+			ops = append(ops, mainOp{Type: "document.create", Record: &rec, Ordinal: &ordinal})
 		case storage.DocumentChangeWrite:
 			content, err := json.Marshal(w.Content)
 			if err != nil {
@@ -168,7 +171,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 			ordinal := nextOrdinal
 			nextOrdinal++
 			sidecars[name] = append(sidecars[name], s.sidecarLine(seq, ordinal, map[string]any{"type": "document", "id": w.ID, "content": json.RawMessage(content)})...)
-			ops = append(ops, mainOp{Type: "document.change", ID: w.ID, Ordinal: ordinal})
+			ops = append(ops, mainOp{Type: "document.change", ID: w.ID, Ordinal: &ordinal})
 		case storage.DocumentRetireWrite:
 			ops = append(ops, mainOp{Type: "document.retire", ID: w.ID})
 		default:
