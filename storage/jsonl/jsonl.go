@@ -23,10 +23,11 @@ const (
 // (via storage.Memory) and persists each commit as sidecar appends plus one
 // main commit marker, matching pi-durable's JSONL format version 1.
 type Store struct {
-	mem      *storage.Memory
-	dir      string
-	ordinals map[string]int
-	fsync    bool
+	mem                  *storage.Memory
+	dir                  string
+	fsync                bool
+	currentOnlyDocuments map[protocol.DocumentID]bool
+	liveTaskSidecars     map[protocol.TaskID]bool
 }
 
 func Open(dir string) (*Store, error) {
@@ -38,7 +39,13 @@ type Options struct {
 }
 
 func OpenWithOptions(dir string, opts Options) (*Store, error) {
-	s := &Store{mem: storage.NewMemory(), dir: dir, ordinals: map[string]int{}, fsync: opts.FSync}
+	s := &Store{
+		mem:                  storage.NewMemory(),
+		dir:                  dir,
+		fsync:                opts.FSync,
+		currentOnlyDocuments: map[protocol.DocumentID]bool{},
+		liveTaskSidecars:     map[protocol.TaskID]bool{},
+	}
 	if err := s.replay(); err != nil {
 		return nil, err
 	}
@@ -59,7 +66,41 @@ func (s *Store) Commit(ctx context.Context, writes []storage.Write, adopt func(p
 	}
 	seq := s.mem.Apply(p)
 	adopt(seq)
+	s.afterCommit(writes)
 	return seq, nil
+}
+
+func isCurrentOnly(c record.DocumentCreate) bool {
+	return c.Scope.Kind != "conversation" || c.History == "latest"
+}
+
+func (s *Store) afterCommit(writes []storage.Write) {
+	for _, w := range writes {
+		switch w := w.(type) {
+		case storage.DocumentCreateWrite:
+			if isCurrentOnly(w.Record) {
+				s.currentOnlyDocuments[w.Record.ID] = true
+			}
+		case storage.TaskWrite:
+			if w.Value.State.Status == "terminal" {
+				delete(s.liveTaskSidecars, w.Value.ID)
+			} else {
+				s.liveTaskSidecars[w.Value.ID] = true
+			}
+		}
+	}
+	for _, w := range writes {
+		switch w := w.(type) {
+		case storage.DocumentRetireWrite:
+			if s.currentOnlyDocuments[w.ID] {
+				_ = os.Remove(filepath.Join(s.dir, sidecarName("doc", protocol.RecordID(w.ID))))
+			}
+		case storage.TaskWrite:
+			if w.Value.State.Status == "terminal" {
+				_ = os.Remove(filepath.Join(s.dir, sidecarName("task", protocol.RecordID(w.Value.ID))))
+			}
+		}
+	}
 }
 
 func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
@@ -211,8 +252,35 @@ func (s *Store) replay() error {
 	if err != nil {
 		return err
 	}
+	currentOnly := map[protocol.DocumentID]bool{}
+	retired := map[protocol.DocumentID]bool{}
+	finalTaskLive := map[protocol.TaskID]bool{}
 	for _, m := range markers {
-		writes, err := s.replayWrites(m.Seq, m.Writes, records)
+		for _, raw := range m.Writes {
+			var op struct {
+				Type   string                `json:"type"`
+				ID     protocol.DocumentID   `json:"id"`
+				Record record.DocumentCreate `json:"record"`
+			}
+			if err := json.Unmarshal(raw, &op); err != nil {
+				return err
+			}
+			switch op.Type {
+			case "document.create":
+				if isCurrentOnly(op.Record) {
+					currentOnly[op.Record.ID] = true
+				}
+			case "document.retire":
+				retired[op.ID] = true
+			case "task":
+				finalTaskLive[protocol.TaskID(op.ID)] = false
+			case "task.sidecar":
+				finalTaskLive[protocol.TaskID(op.ID)] = true
+			}
+		}
+	}
+	for _, m := range markers {
+		writes, err := s.replayWrites(m.Seq, m.Writes, records, currentOnly, retired, finalTaskLive)
 		if err != nil {
 			return err
 		}
@@ -270,7 +338,14 @@ func (s *Store) loadSidecars() (map[string]map[string]json.RawMessage, error) {
 	return records, nil
 }
 
-func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage, records map[string]map[string]json.RawMessage) ([]storage.Write, error) {
+func (s *Store) replayWrites(
+	seq protocol.Seq,
+	rawWrites []json.RawMessage,
+	records map[string]map[string]json.RawMessage,
+	currentOnly map[protocol.DocumentID]bool,
+	retired map[protocol.DocumentID]bool,
+	finalTaskLive map[protocol.TaskID]bool,
+) ([]storage.Write, error) {
 	out := make([]storage.Write, 0, len(rawWrites))
 	for _, raw := range rawWrites {
 		var op struct {
@@ -309,6 +384,9 @@ func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage, reco
 			}
 			out = append(out, storage.TaskWrite{Value: rec})
 		case "task.sidecar":
+			if live, ok := finalTaskLive[protocol.TaskID(op.ID)]; ok && !live {
+				continue
+			}
 			key := fmt.Sprintf("%s|%d|%d|value", sidecarName("task", protocol.RecordID(op.ID)), seq, op.Ordinal)
 			var rec record.TaskRecord
 			if err := unmarshalSidecar(records, key, &rec); err != nil {
@@ -316,13 +394,21 @@ func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage, reco
 			}
 			out = append(out, storage.TaskWrite{Value: rec})
 		case "document.create":
+			reclaimed := retired[op.Record.ID] && currentOnly[op.Record.ID]
 			key := fmt.Sprintf("%s|%d|%d|content", sidecarName("doc", protocol.RecordID(op.Record.ID)), seq, op.Ordinal)
 			var content storage.DocumentContent
 			if err := unmarshalSidecar(records, key, &content); err != nil {
-				return nil, err
+				if reclaimed {
+					content = storage.DocumentContent{Version: 1, Kind: "base", Value: map[string]any{}}
+				} else {
+					return nil, err
+				}
 			}
 			out = append(out, storage.DocumentCreateWrite{Record: op.Record, Content: content})
 		case "document.change":
+			if retired[op.ID] && currentOnly[op.ID] {
+				continue
+			}
 			key := fmt.Sprintf("%s|%d|%d|content", sidecarName("doc", protocol.RecordID(op.ID)), seq, op.Ordinal)
 			var content storage.DocumentContent
 			if err := unmarshalSidecar(records, key, &content); err != nil {

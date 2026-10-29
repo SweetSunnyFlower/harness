@@ -9,7 +9,7 @@
 | 1B 记录 | harness/record（五类记录 + unknown 保留） | ✅ 提交 94b0668 |
 | 1C 存储 | harness/storage（契约 + Memory） | ✅ 提交 195726f |
 | 1D SQLite | schema v2 迁移、全部查询、文档 base/delta | ✅ 契约+迁移测试通过；TS 文件级互操作属 1F |
-| 1E JSONL | main/sidecar、恢复、回收、fsync | 🟡 契约+重开通过；回收/fsync 未实现 |
+| 1E JSONL | main/sidecar、恢复、回收、fsync | ✅ 契约/重开/回收/fsync 通过；TS 互操作属 1F |
 | 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 🟡 已实现并编译；未对真实服务器验证 |
 | 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 待办 |
 | 2 持久化内核 | Session、事务、fork、任务树、调度、取消、恢复 | 待办 |
@@ -27,7 +27,7 @@
 ## 1E 完成说明
 
 - 实现 format v1 main.jsonl 提交标记 + task/doc sidecar、重开恢复与撕裂尾行处理，通过共享契约与重开测试。
-- 已实现 fsync 模式与跨语言 sidecar 引用格式（每 commit 全局 ordinal + (file,seq,ordinal) 匹配）；尚未实现 sidecar 回收（reclaim）；TS↔Go 文件级互操作属 1F。
+- 已实现 fsync、跨语言 sidecar 引用格式，以及 sidecar 回收：退休的 current-only 文档与已终止任务对应的 sidecar 在提交后被移除，恢复采用两遍扫描容忍已回收记录；TS↔Go 文件级互操作属 1F。
 
 ## 1G 完成说明
 
