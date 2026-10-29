@@ -6,7 +6,7 @@ import (
 	"harness/protocol"
 )
 
-type documentFields struct {
+type DocumentFields struct {
 	ID        protocol.DocumentID `json:"id"`
 	Kind      string              `json:"kind"`
 	Key       string              `json:"key,omitempty"`
@@ -18,11 +18,11 @@ type documentFields struct {
 }
 
 type DocumentRecord struct {
-	documentFields
+	DocumentFields
 	extra map[string]json.RawMessage
 }
 
-type documentCreateFields struct {
+type DocumentCreateFields struct {
 	ID      protocol.DocumentID `json:"id"`
 	Kind    string              `json:"kind"`
 	Key     string              `json:"key,omitempty"`
@@ -32,8 +32,35 @@ type documentCreateFields struct {
 }
 
 type DocumentCreate struct {
-	documentCreateFields
+	DocumentCreateFields
 	extra map[string]json.RawMessage
+}
+
+// DocumentRecordFromCreate stamps a create record with its creation sequence.
+func DocumentRecordFromCreate(c DocumentCreate, createdAt protocol.Seq) DocumentRecord {
+	return DocumentRecord{
+		DocumentFields: DocumentFields{
+			ID:        c.ID,
+			Kind:      c.Kind,
+			Key:       c.Key,
+			CreatedAt: createdAt,
+			Scope:     c.Scope,
+			History:   c.History,
+			Fork:      c.Fork,
+		},
+		extra: cloneExtra(c.extra),
+	}
+}
+
+func cloneExtra(m map[string]json.RawMessage) map[string]json.RawMessage {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(m))
+	for k, v := range m {
+		out[k] = append(json.RawMessage(nil), v...)
+	}
+	return out
 }
 
 func (r DocumentRecord) Validate() error {
@@ -101,29 +128,29 @@ func (r DocumentCreate) validateScope() error {
 }
 
 func (r DocumentRecord) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(r.documentFields, r.extra)
+	return marshalWithExtra(r.DocumentFields, r.extra)
 }
 
 func (r *DocumentRecord) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &r.documentFields, &r.extra)
+	return unmarshalWithExtra(data, &r.DocumentFields, &r.extra)
 }
 
 func (r DocumentCreate) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(r.documentCreateFields, r.extra)
+	return marshalWithExtra(r.DocumentCreateFields, r.extra)
 }
 
 func (r *DocumentCreate) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &r.documentCreateFields, &r.extra)
+	return unmarshalWithExtra(data, &r.DocumentCreateFields, &r.extra)
 }
 
-type documentScopeFields struct {
+type DocumentScopeFields struct {
 	Kind           string                   `json:"kind"`
 	ConversationID *protocol.ConversationID `json:"conversationId,omitempty"`
 	TaskID         *protocol.TaskID         `json:"taskId,omitempty"`
 }
 
 type DocumentScope struct {
-	documentScopeFields
+	DocumentScopeFields
 	extra map[string]json.RawMessage
 }
 
@@ -149,9 +176,9 @@ func (s DocumentScope) Validate() error {
 }
 
 func (s DocumentScope) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(s.documentScopeFields, s.extra)
+	return marshalWithExtra(s.DocumentScopeFields, s.extra)
 }
 
 func (s *DocumentScope) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &s.documentScopeFields, &s.extra)
+	return unmarshalWithExtra(data, &s.DocumentScopeFields, &s.extra)
 }

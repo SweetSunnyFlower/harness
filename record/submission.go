@@ -6,7 +6,7 @@ import (
 	"harness/protocol"
 )
 
-type submissionFields struct {
+type SubmissionFields struct {
 	Trace          json.RawMessage         `json:"trace,omitempty"`
 	ID             protocol.SubmissionID   `json:"id"`
 	ConversationID protocol.ConversationID `json:"conversationId"`
@@ -20,7 +20,7 @@ type submissionFields struct {
 }
 
 type SubmissionRecord struct {
-	submissionFields
+	SubmissionFields
 	extra map[string]json.RawMessage
 }
 
@@ -91,11 +91,11 @@ func (r SubmissionRecord) Validate() error {
 }
 
 func (r SubmissionRecord) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(r.submissionFields, r.extra)
+	return marshalWithExtra(r.SubmissionFields, r.extra)
 }
 
 func (r *SubmissionRecord) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &r.submissionFields, &r.extra)
+	return unmarshalWithExtra(data, &r.SubmissionFields, &r.extra)
 }
 
 func oneOf(v string, allowed ...string) bool {

@@ -6,7 +6,7 @@ import (
 	"harness/protocol"
 )
 
-type entryFields struct {
+type EntryFields struct {
 	ID             protocol.EntryID        `json:"id"`
 	ConversationID protocol.ConversationID `json:"conversationId"`
 	Kind           string                  `json:"kind"`
@@ -18,7 +18,7 @@ type entryFields struct {
 }
 
 type EntryRecord struct {
-	entryFields
+	EntryFields
 	extra map[string]json.RawMessage
 }
 
@@ -39,9 +39,9 @@ func (r EntryRecord) Validate() error {
 }
 
 func (r EntryRecord) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(r.entryFields, r.extra)
+	return marshalWithExtra(r.EntryFields, r.extra)
 }
 
 func (r *EntryRecord) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &r.entryFields, &r.extra)
+	return unmarshalWithExtra(data, &r.EntryFields, &r.extra)
 }

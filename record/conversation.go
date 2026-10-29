@@ -6,7 +6,7 @@ import (
 	"harness/protocol"
 )
 
-type conversationFields struct {
+type ConversationFields struct {
 	ID     protocol.ConversationID `json:"id"`
 	Parent *ConversationParent     `json:"parent,omitempty"`
 	Owner  *ConversationOwner      `json:"owner,omitempty"`
@@ -23,7 +23,7 @@ type ConversationOwner struct {
 }
 
 type ConversationRecord struct {
-	conversationFields
+	ConversationFields
 	extra map[string]json.RawMessage
 }
 
@@ -45,9 +45,9 @@ func (r ConversationRecord) Validate() error {
 }
 
 func (r ConversationRecord) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(r.conversationFields, r.extra)
+	return marshalWithExtra(r.ConversationFields, r.extra)
 }
 
 func (r *ConversationRecord) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &r.conversationFields, &r.extra)
+	return unmarshalWithExtra(data, &r.ConversationFields, &r.extra)
 }

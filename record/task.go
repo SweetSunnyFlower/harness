@@ -7,7 +7,7 @@ import (
 	"harness/protocol"
 )
 
-type taskFields struct {
+type TaskFields struct {
 	Trace            json.RawMessage         `json:"trace,omitempty"`
 	Links            json.RawMessage         `json:"links,omitempty"`
 	ID               protocol.TaskID         `json:"id"`
@@ -28,7 +28,7 @@ type taskFields struct {
 }
 
 type TaskRecord struct {
-	taskFields
+	TaskFields
 	extra map[string]json.RawMessage
 }
 
@@ -55,14 +55,14 @@ func (r TaskRecord) Validate() error {
 }
 
 func (r TaskRecord) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(r.taskFields, r.extra)
+	return marshalWithExtra(r.TaskFields, r.extra)
 }
 
 func (r *TaskRecord) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &r.taskFields, &r.extra)
+	return unmarshalWithExtra(data, &r.TaskFields, &r.extra)
 }
 
-type taskStateFields struct {
+type TaskStateFields struct {
 	Status     string          `json:"status"`
 	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
 	On         json.RawMessage `json:"on,omitempty"`
@@ -72,7 +72,7 @@ type taskStateFields struct {
 }
 
 type TaskState struct {
-	taskStateFields
+	TaskStateFields
 	extra map[string]json.RawMessage
 }
 
@@ -107,14 +107,14 @@ func (s TaskState) Validate() error {
 }
 
 func (s TaskState) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(s.taskStateFields, s.extra)
+	return marshalWithExtra(s.TaskStateFields, s.extra)
 }
 
 func (s *TaskState) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &s.taskStateFields, &s.extra)
+	return unmarshalWithExtra(data, &s.TaskStateFields, &s.extra)
 }
 
-type taskOutcomeFields struct {
+type TaskOutcomeFields struct {
 	Status string            `json:"status"`
 	Result json.RawMessage   `json:"result,omitempty"`
 	Error  *TaskOutcomeError `json:"error,omitempty"`
@@ -122,7 +122,7 @@ type taskOutcomeFields struct {
 }
 
 type TaskOutcome struct {
-	taskOutcomeFields
+	TaskOutcomeFields
 	extra map[string]json.RawMessage
 }
 
@@ -161,11 +161,11 @@ func (o TaskOutcome) Validate() error {
 }
 
 func (o TaskOutcome) MarshalJSON() ([]byte, error) {
-	return marshalWithExtra(o.taskOutcomeFields, o.extra)
+	return marshalWithExtra(o.TaskOutcomeFields, o.extra)
 }
 
 func (o *TaskOutcome) UnmarshalJSON(data []byte) error {
-	return unmarshalWithExtra(data, &o.taskOutcomeFields, &o.extra)
+	return unmarshalWithExtra(data, &o.TaskOutcomeFields, &o.extra)
 }
 
 type TaskOutcomeError struct {
