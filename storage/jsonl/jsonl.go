@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"harness/protocol"
 	"harness/record"
@@ -71,6 +72,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 	}
 	ops := make([]mainOp, 0, len(writes))
 	sidecars := map[string][]byte{}
+	nextOrdinal := 0
 	for _, w := range writes {
 		switch w := w.(type) {
 		case storage.ConversationWrite:
@@ -100,8 +102,8 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 				ops = append(ops, mainOp{Type: "task", Value: b})
 			} else {
 				name := sidecarName("task", protocol.RecordID(w.Value.ID))
-				ordinal := s.ordinals[name]
-				s.ordinals[name] = ordinal + 1
+				ordinal := nextOrdinal
+				nextOrdinal++
 				sidecars[name] = append(sidecars[name], s.sidecarLine(seq, ordinal, map[string]any{"type": "task", "value": json.RawMessage(b)})...)
 				ops = append(ops, mainOp{Type: "task.sidecar", ID: protocol.DocumentID(w.Value.ID), Ordinal: ordinal})
 			}
@@ -111,8 +113,8 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 				return err
 			}
 			name := sidecarName("doc", protocol.RecordID(w.Record.ID))
-			ordinal := s.ordinals[name]
-			s.ordinals[name] = ordinal + 1
+			ordinal := nextOrdinal
+			nextOrdinal++
 			sidecars[name] = append(sidecars[name], s.sidecarLine(seq, ordinal, map[string]any{"type": "document", "id": w.Record.ID, "content": json.RawMessage(content)})...)
 			rec := w.Record
 			ops = append(ops, mainOp{Type: "document.create", Record: &rec, Ordinal: ordinal})
@@ -122,8 +124,8 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 				return err
 			}
 			name := sidecarName("doc", protocol.RecordID(w.ID))
-			ordinal := s.ordinals[name]
-			s.ordinals[name] = ordinal + 1
+			ordinal := nextOrdinal
+			nextOrdinal++
 			sidecars[name] = append(sidecars[name], s.sidecarLine(seq, ordinal, map[string]any{"type": "document", "id": w.ID, "content": json.RawMessage(content)})...)
 			ops = append(ops, mainOp{Type: "document.change", ID: w.ID, Ordinal: ordinal})
 		case storage.DocumentRetireWrite:
@@ -183,22 +185,34 @@ func (s *Store) replay() error {
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	type marker struct {
+		Format int               `json:"format"`
+		Type   string            `json:"type"`
+		Seq    protocol.Seq      `json:"seq"`
+		Writes []json.RawMessage `json:"writes"`
+	}
+	var markers []marker
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		var marker struct {
-			Format int               `json:"format"`
-			Type   string            `json:"type"`
-			Seq    protocol.Seq      `json:"seq"`
-			Writes []json.RawMessage `json:"writes"`
-		}
-		if err := json.Unmarshal(line, &marker); err != nil {
+		var m marker
+		if err := json.Unmarshal(line, &m); err != nil {
 			// Torn final line: stop recovery at the last complete marker.
 			break
 		}
-		if marker.Format != formatVersion || marker.Type != "commit" {
+		if m.Format != formatVersion || m.Type != "commit" {
 			return fmt.Errorf("jsonl: invalid commit marker")
 		}
-		writes, err := s.replayWrites(marker.Seq, marker.Writes)
+		markers = append(markers, m)
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	records, err := s.loadSidecars()
+	if err != nil {
+		return err
+	}
+	for _, m := range markers {
+		writes, err := s.replayWrites(m.Seq, m.Writes, records)
 		if err != nil {
 			return err
 		}
@@ -206,10 +220,57 @@ func (s *Store) replay() error {
 			return err
 		}
 	}
-	return scanner.Err()
+	return nil
 }
 
-func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage) ([]storage.Write, error) {
+func (s *Store) loadSidecars() (map[string]map[string]json.RawMessage, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	records := map[string]map[string]json.RawMessage{}
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == mainFile {
+			continue
+		}
+		if !strings.HasPrefix(e.Name(), "doc-") && !strings.HasPrefix(e.Name(), "task-") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+		for scanner.Scan() {
+			var rec struct {
+				Seq     protocol.Seq               `json:"seq"`
+				Ordinal int                        `json:"ordinal"`
+				Payload map[string]json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+				f.Close()
+				return nil, err
+			}
+			key := fmt.Sprintf("%s|%d|%d", e.Name(), rec.Seq, rec.Ordinal)
+			fileRecords := records[e.Name()]
+			if fileRecords == nil {
+				fileRecords = map[string]json.RawMessage{}
+				records[e.Name()] = fileRecords
+			}
+			for k, v := range rec.Payload {
+				fileRecords[key+"|"+k] = v
+			}
+		}
+		f.Close()
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return records, nil
+}
+
+func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage, records map[string]map[string]json.RawMessage) ([]storage.Write, error) {
 	out := make([]storage.Write, 0, len(rawWrites))
 	for _, raw := range rawWrites {
 		var op struct {
@@ -248,32 +309,23 @@ func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage) ([]s
 			}
 			out = append(out, storage.TaskWrite{Value: rec})
 		case "task.sidecar":
-			payload, err := s.readSidecar(sidecarName("task", protocol.RecordID(op.ID)), op.Ordinal)
-			if err != nil {
-				return nil, err
-			}
+			key := fmt.Sprintf("%s|%d|%d|value", sidecarName("task", protocol.RecordID(op.ID)), seq, op.Ordinal)
 			var rec record.TaskRecord
-			if err := json.Unmarshal(payload["value"], &rec); err != nil {
+			if err := unmarshalSidecar(records, key, &rec); err != nil {
 				return nil, err
 			}
 			out = append(out, storage.TaskWrite{Value: rec})
 		case "document.create":
-			payload, err := s.readSidecar(sidecarName("doc", protocol.RecordID(op.Record.ID)), op.Ordinal)
-			if err != nil {
-				return nil, err
-			}
+			key := fmt.Sprintf("%s|%d|%d|content", sidecarName("doc", protocol.RecordID(op.Record.ID)), seq, op.Ordinal)
 			var content storage.DocumentContent
-			if err := json.Unmarshal(payload["content"], &content); err != nil {
+			if err := unmarshalSidecar(records, key, &content); err != nil {
 				return nil, err
 			}
 			out = append(out, storage.DocumentCreateWrite{Record: op.Record, Content: content})
 		case "document.change":
-			payload, err := s.readSidecar(sidecarName("doc", protocol.RecordID(op.ID)), op.Ordinal)
-			if err != nil {
-				return nil, err
-			}
+			key := fmt.Sprintf("%s|%d|%d|content", sidecarName("doc", protocol.RecordID(op.ID)), seq, op.Ordinal)
 			var content storage.DocumentContent
-			if err := json.Unmarshal(payload["content"], &content); err != nil {
+			if err := unmarshalSidecar(records, key, &content); err != nil {
 				return nil, err
 			}
 			out = append(out, storage.DocumentChangeWrite{ID: op.ID, Content: content})
@@ -286,28 +338,13 @@ func (s *Store) replayWrites(seq protocol.Seq, rawWrites []json.RawMessage) ([]s
 	return out, nil
 }
 
-func (s *Store) readSidecar(name string, ordinal int) (map[string]json.RawMessage, error) {
-	f, err := os.Open(filepath.Join(s.dir, name))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
-	i := 0
-	for scanner.Scan() {
-		if i == ordinal {
-			var rec struct {
-				Payload map[string]json.RawMessage `json:"payload"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
-				return nil, err
-			}
-			return rec.Payload, nil
+func unmarshalSidecar(records map[string]map[string]json.RawMessage, key string, into any) error {
+	for _, fileRecords := range records {
+		if raw, ok := fileRecords[key]; ok {
+			return json.Unmarshal(raw, into)
 		}
-		i++
 	}
-	return nil, fmt.Errorf("jsonl: sidecar %s ordinal %d not found", name, ordinal)
+	return fmt.Errorf("jsonl: missing sidecar record %s", key)
 }
 
 func (s *Store) Close(ctx context.Context) error {

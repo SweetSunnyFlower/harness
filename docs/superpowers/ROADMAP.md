@@ -27,7 +27,7 @@
 ## 1E 完成说明
 
 - 实现 format v1 main.jsonl 提交标记 + task/doc sidecar、重开恢复与撕裂尾行处理，通过共享契约与重开测试。
-- 已实现 fsync 模式（受影响 sidecar 先落盘再写 main 标记，含重开测试）；尚未实现 sidecar 回收（reclaim）；TS↔Go 文件级互操作属 1F。
+- 已实现 fsync 模式与跨语言 sidecar 引用格式（每 commit 全局 ordinal + (file,seq,ordinal) 匹配）；尚未实现 sidecar 回收（reclaim）；TS↔Go 文件级互操作属 1F。
 
 ## 1G 完成说明
 
