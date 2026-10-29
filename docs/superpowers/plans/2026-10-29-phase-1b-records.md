@@ -27,7 +27,9 @@
 | `record/document.go` | `DocumentRecord`、`DocumentCreate`、`DocumentScope` |
 | `record/*_test.go` | 往返、未知字段保留、联合校验、参考向量 |
 
-每个类型公开 `Validate() error`，并在 `UnmarshalJSON` 中完成类型化解码后由调用方显式校验（解码不静默丢弃，但不因校验失败破坏 unknown 保留；`Parse` 辅助函数负责解码+校验）。opaque 字段解码失败返回错误。
+每个类型公开 `Validate() error`，并在 `UnmarshalJSON` 中完成类型化解码后由调用方显式校验（解码不静默丢弃，但不因校验失败破坏 unknown 保留）。opaque 字段解码失败返回错误。
+
+执行记录：实现提交 `94b0668`。`harness/record` 交付五类记录、未知字段 Extra 保留与联合校验。验证：`go test ./... -count=1`、`go vet ./...`、`go test -race ./... -count=1`、`CGO_ENABLED=0 go test ./... -count=1` 全部通过。关键保真细节已覆盖：`on:[]` 空数组不因 omitempty 丢失，非法 ID 错误链同时含 `record.ErrRecord` 与 `protocol.ErrID`，会话/会话文档/任务文档的判别联合均按 TS 形状往返并拒绝非法组合。Node 对照脚本未单独添加，因为 Go 测试以字面 TS 形状 JSON 断言字段名与形状，字段保真由这些往返测试直接覆盖。
 
 ## 完成标准
 
