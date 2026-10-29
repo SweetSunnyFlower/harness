@@ -25,10 +25,19 @@ type Store struct {
 	mem      *storage.Memory
 	dir      string
 	ordinals map[string]int
+	fsync    bool
 }
 
 func Open(dir string) (*Store, error) {
-	s := &Store{mem: storage.NewMemory(), dir: dir, ordinals: map[string]int{}}
+	return OpenWithOptions(dir, Options{})
+}
+
+type Options struct {
+	FSync bool
+}
+
+func OpenWithOptions(dir string, opts Options) (*Store, error) {
+	s := &Store{mem: storage.NewMemory(), dir: dir, ordinals: map[string]int{}, fsync: opts.FSync}
 	if err := s.replay(); err != nil {
 		return nil, err
 	}
@@ -124,7 +133,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 		}
 	}
 	for name, data := range sidecars {
-		if err := appendFile(filepath.Join(s.dir, name), data); err != nil {
+		if err := appendFile(filepath.Join(s.dir, name), data, s.fsync); err != nil {
 			return err
 		}
 	}
@@ -132,7 +141,7 @@ func (s *Store) persist(seq protocol.Seq, writes []storage.Write) error {
 	if err != nil {
 		return err
 	}
-	return appendFile(filepath.Join(s.dir, mainFile), append(marker, '\n'))
+	return appendFile(filepath.Join(s.dir, mainFile), append(marker, '\n'), s.fsync)
 }
 
 func (s *Store) sidecarLine(seq protocol.Seq, ordinal int, payload any) []byte {
@@ -144,7 +153,7 @@ func sidecarName(kind string, id protocol.RecordID) string {
 	return fmt.Sprintf("%s-%d.jsonl", kind, id)
 }
 
-func appendFile(path string, data []byte) error {
+func appendFile(path string, data []byte, fsync bool) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -152,6 +161,12 @@ func appendFile(path string, data []byte) error {
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
+	}
+	if fsync {
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
 	}
 	return f.Close()
 }

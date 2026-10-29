@@ -51,3 +51,27 @@ func TestJSONLReopen(t *testing.T) {
 	}
 	_ = s2.Close(ctx)
 }
+
+func TestJSONLReopenFSync(t *testing.T) {
+	dir := t.TempDir()
+	s, err := jsonlstorage.OpenWithOptions(dir, jsonlstorage.Options{FSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.Commit(ctx, []storage.Write{
+		storage.ConversationWrite{Value: record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}},
+	}, func(protocol.Seq) {}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close(ctx)
+	s2, err := jsonlstorage.OpenWithOptions(dir, jsonlstorage.Options{FSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s2.Conversation(ctx, 1)
+	if err != nil || got == nil {
+		t.Fatalf("fsync reopen %v %v", got, err)
+	}
+	_ = s2.Close(ctx)
+}
