@@ -1,0 +1,15 @@
+[
+  {"name":"null","raw":"null","valid":true,"kind":"null"},
+  {"name":"array","raw":"[]","valid":true,"kind":"array"},
+  {"name":"object","raw":"{}","valid":true,"kind":"object"},
+  {"name":"bool","raw":"true","valid":true,"kind":"boolean"},
+  {"name":"empty-string","raw":"\"\"","valid":true,"kind":"string","units":[]},
+  {"name":"high-surrogate","raw":"\"\\ud800\"","valid":true,"kind":"string","units":[55296]},
+  {"name":"low-surrogate","raw":"\"\\udfff\"","valid":true,"kind":"string","units":[57343]},
+  {"name":"astral","raw":"\"😀\"","valid":true,"kind":"string","units":[55357,56832]},
+  {"name":"negative-zero","raw":"-0","valid":true,"kind":"number","number":0,"negativeZero":true},
+  {"name":"rounded-number","raw":"9007199254740993","valid":true,"kind":"number","number":9007199254740992},
+  {"name":"overflow","raw":"1e400","valid":false},
+  {"name":"nested-overflow","raw":"{\"x\":[1e400]}","valid":false},
+  {"name":"trailing-value","raw":"null true","valid":false}
+]
