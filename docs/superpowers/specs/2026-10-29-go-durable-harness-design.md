@@ -1,7 +1,7 @@
 # Go 通用 Durable Agent Harness 设计
 
 - 日期：2026-10-29
-- 状态：设计内容及本书面规格已获用户确认；进入分阶段详细设计与计划；尚未进入实现
+- 状态：总规格已获用户确认；阶段 1A 数据边界已实现并通过逐任务审查，其余子项目尚未实现
 - 项目目录：`/Users/gao/harness-codex`
 - 交付形式：可嵌入 Go 应用的通用包
 - 上游基线：`earendil-works/pi@e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`

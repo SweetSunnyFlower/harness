@@ -52,7 +52,7 @@
 | `tools/compat/check-json.mjs` | JavaScript 对同一预期的独立验证 |
 | `README.md` | 当前阶段的实际使用、限制与验证命令 |
 
-下文代码块给出本子项目的完整文件内容。它们是待执行内容，当前仓库尚未创建这些实现文件。
+下文代码块为本子项目的实施依据。五项任务已经执行并逐项通过审查，实际文件位于仓库中相应路径；勾选记录对应本次执行结果。
 
 ## Task 1: 不可变 JSON 值与协议字段提取
 
@@ -68,7 +68,7 @@
 - Produces: `Parse([]byte) (Value, error)`；`Value.Kind() Kind`；`Value.Bytes() []byte`；`Value.Number() (float64, error)`；`Value.FieldASCII(string) (Value, bool, error)`；`Value.MarshalJSON() ([]byte, error)`；`(*Value).UnmarshalJSON([]byte) error`。
 - `Value` 零值为 null。Kind 枚举和错误哨兵完整定义在下文。FieldASCII 不承担任意 Unicode 键编辑。
 
-- [ ] **Step 1: 建立 module 并写失败测试**
+- [x] **Step 1: 建立 module 并写失败测试**
 
 `go.mod`：
 
@@ -179,13 +179,13 @@ func TestZeroAndFailedUnmarshal(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 验证测试失败**
+- [x] **Step 2: 验证测试失败**
 
 Run: `go test ./jsonvalue -count=1`
 
 Expected: FAIL，尚无 jsonvalue 的非测试实现，导入或符号缺失。
 
-- [ ] **Step 3: 添加完整最小实现**
+- [x] **Step 3: 添加完整最小实现**
 
 `jsonvalue/value.go`：
 
@@ -326,13 +326,13 @@ func (v *Value) UnmarshalJSON(data []byte) error {
 
 Parse 中 Decoder.Token 只用于检查数字，不用其解码后的字符串重建数据；否则孤立代理项会丢失。FieldASCII 的临时 map 仅提取已知 ASCII 键，整个值始终保留原始 JSON。
 
-- [ ] **Step 4: 验证行为**
+- [x] **Step 4: 验证行为**
 
 Run: `go test ./jsonvalue -count=1 -v`
 
 Expected: 四个 Test 全部 PASS。
 
-- [ ] **Step 5: 格式化、复验并提交**
+- [x] **Step 5: 格式化、复验并提交**
 
 Run: `gofmt -w jsonvalue/value.go jsonvalue/value_test.go`
 
@@ -357,7 +357,7 @@ Run: `git commit -m "feat: add immutable strict JSON values"`
 - Produces: `Value.StringUnits() ([]uint16, error)`；`StringFromUnits([]uint16) Value`。
 - 每次提取返回新切片；构造不保留调用方切片。后续 delta.t 在这些 code units 上切片。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `jsonvalue/string_test.go`：
 
@@ -443,13 +443,13 @@ func FuzzStringUnitsRoundTrip(f *testing.F) {
 }
 ```
 
-- [ ] **Step 2: 验证测试失败**
+- [x] **Step 2: 验证测试失败**
 
 Run: `go test ./jsonvalue -run TestStringUnits -count=1`
 
 Expected: FAIL，StringUnits/StringFromUnits 未定义。
 
-- [ ] **Step 3: 添加完整实现**
+- [x] **Step 3: 添加完整实现**
 
 `jsonvalue/string.go`：
 
@@ -527,7 +527,7 @@ func StringFromUnits(units []uint16) Value {
 }
 ```
 
-- [ ] **Step 4: 运行边界测试与短 fuzz**
+- [x] **Step 4: 运行边界测试与短 fuzz**
 
 Run: `go test ./jsonvalue -count=1`
 
@@ -537,7 +537,7 @@ Run: `go test ./jsonvalue -run '^$' -fuzz '^FuzzStringUnitsRoundTrip$' -fuzztime
 
 Expected: PASS，不出现代理项被替换、越界或输入输出别名问题。
 
-- [ ] **Step 5: 格式化、复验并提交**
+- [x] **Step 5: 格式化、复验并提交**
 
 Run: `gofmt -w jsonvalue/string.go jsonvalue/string_test.go`
 
@@ -560,7 +560,7 @@ Run: `git commit -m "feat: preserve JavaScript UTF-16 string values"`
 - Produces: 泛型 `ID[K]`；别名 `RecordID`、`ConversationID`、`EntryID`、`TaskID`、`SubmissionID`、`DocumentID`、`Seq`；`MaxSafeInteger`、`RootConversationID`；`ID.Valid() bool` 及 JSON 编解码。
 - ID 类型名区分实体种类，显式 Go 类型转换仍可进行；持久化边界再次校验数值。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `protocol/id_test.go`：
 
@@ -641,13 +641,13 @@ func TestIDKindsAndRoot(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 验证测试失败**
+- [x] **Step 2: 验证测试失败**
 
 Run: `go test ./protocol -count=1`
 
 Expected: FAIL，protocol 实现尚不存在。
 
-- [ ] **Step 3: 添加完整实现**
+- [x] **Step 3: 添加完整实现**
 
 `protocol/id.go`：
 
@@ -717,13 +717,13 @@ func (id *ID[K]) UnmarshalJSON(data []byte) error {
 
 这里限制的是解析后的 JavaScript number 的安全整数语义。通用 JSON Value 不会因普通数据数字超出安全整数范围而拒绝它；只有 ID/Seq 使用此限制。
 
-- [ ] **Step 4: 验证 ID 与上游边界**
+- [x] **Step 4: 验证 ID 与上游边界**
 
 Run: `go test ./protocol ./jsonvalue -count=1 -v`
 
 Expected: PASS；最大安全整数可往返，下一整数拒绝。
 
-- [ ] **Step 5: 格式化、复验并提交**
+- [x] **Step 5: 格式化、复验并提交**
 
 Run: `gofmt -w protocol/id.go protocol/id_test.go`
 
@@ -746,7 +746,7 @@ Run: `git commit -m "feat: define typed durable IDs and sequences"`
 - Produces: `record.Parse([]byte) (Envelope, error)`；`Envelope.ID() protocol.RecordID`；`Envelope.Value() jsonvalue.Value`；`Envelope.FieldASCII(string) (jsonvalue.Value, bool, error)`；JSON 编解码。
 - 只验证对象和 ID；后续完整记录解码负责具体 kind/version/state 的语义。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `internal/record/envelope_test.go`：
 
@@ -815,13 +815,13 @@ func TestEnvelopeFailedUnmarshalPreservesRecord(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 验证测试失败**
+- [x] **Step 2: 验证测试失败**
 
 Run: `go test ./internal/record -count=1`
 
 Expected: FAIL，record 的非测试实现尚不存在。
 
-- [ ] **Step 3: 添加完整实现**
+- [x] **Step 3: 添加完整实现**
 
 `internal/record/envelope.go`：
 
@@ -893,13 +893,13 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 }
 ```
 
-- [ ] **Step 4: 验证未知内容保留与拒绝条件**
+- [x] **Step 4: 验证未知内容保留与拒绝条件**
 
 Run: `go test ./internal/record ./protocol ./jsonvalue -count=1 -v`
 
 Expected: PASS。未知任务 kind/version 可被保留，不会在此数据层被误执行或丢弃。
 
-- [ ] **Step 5: 格式化、复验并提交**
+- [x] **Step 5: 格式化、复验并提交**
 
 Run: `gofmt -w internal/record/envelope.go internal/record/envelope_test.go`
 
@@ -924,7 +924,7 @@ Run: `git commit -m "feat: preserve unknown durable record content"`
 - Produces: 固定夹具 JSON；Go `TestCorpus` 与 Node 对照脚本；两者都独立核对显式预期，不互相生成预期。
 - 此测试只验证 JavaScript 数据语义；上游真实 Storage 往返属于 1D–1F。
 
-- [ ] **Step 1: 先写读取尚不存在夹具的测试**
+- [x] **Step 1: 先写读取尚不存在夹具的测试**
 
 `jsonvalue/corpus_test.go`：
 
@@ -993,13 +993,13 @@ func TestCorpus(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 验证参考测试失败**
+- [x] **Step 2: 验证参考测试失败**
 
 Run: `go test ./jsonvalue -run '^TestCorpus$' -count=1`
 
 Expected: FAIL，`../testdata/json-corpus.json` 不存在。
 
-- [ ] **Step 3: 加入显式夹具与独立参考实现**
+- [x] **Step 3: 加入显式夹具与独立参考实现**
 
 `testdata/json-corpus.json`：
 
@@ -1063,7 +1063,7 @@ for (const test of cases) {
 console.log(`PASS ${cases.length} JavaScript value cases`);
 ```
 
-- [ ] **Step 4: 分别运行 Go 与 JavaScript 对照**
+- [x] **Step 4: 分别运行 Go 与 JavaScript 对照**
 
 Run: `go test ./jsonvalue -run '^TestCorpus$' -count=1 -v`
 
@@ -1073,7 +1073,7 @@ Run: `node tools/compat/check-json.mjs`
 
 Expected: `PASS 13 JavaScript value cases`。
 
-- [ ] **Step 5: 写清楚当前能力，不宣称存储或 Agent 已实现**
+- [x] **Step 5: 写清楚当前能力，不宣称存储或 Agent 已实现**
 
 `README.md`：
 
@@ -1139,7 +1139,7 @@ Go 包的运行和 Go 单元测试均不调用 Node.js。
 数据语义夹具通过不等于 SQLite/JSONL 已完成跨语言互操作。
 ````
 
-- [ ] **Step 6: 完整验证当前子项目**
+- [x] **Step 6: 完整验证当前子项目**
 
 Run: `gofmt -w jsonvalue/corpus_test.go`
 
@@ -1155,7 +1155,7 @@ Run: `git diff --check`
 
 Expected: 全部退出码为 0，Go 三个包的测试均 PASS。CGO_ENABLED=0 只验证此子项目，不扩展为后续 SQLite 驱动已验证的声明。
 
-- [ ] **Step 7: 提交夹具、验证器与使用说明**
+- [x] **Step 7: 提交夹具、验证器与使用说明**
 
 Run: `git add -- testdata/json-corpus.json jsonvalue/corpus_test.go tools/compat/check-json.mjs README.md`
 
@@ -1177,7 +1177,23 @@ Run: `git commit -m "test: cross-check wire values against JavaScript"`
 
 - 总设计中的完整移植、无 Node 运行依赖、未知字段保留和兼容声明边界均已映射到本子项目；存储及运行时要求显式映射到后续子项目，没有删除。
 - Task 1 定义 Value/Kind/错误与字段访问；Task 2 仅扩展字符串；Task 3 只依赖 Value；Task 4 消费 Value/RecordID；Task 5 消费上述已定义接口。
-- 每个代码步骤包含完整文件内容，测试包含具体断言及预期失败。代码内容尚未执行，计划检查不等于 Go 测试已通过。
+- 每个代码步骤包含完整文件内容，测试包含具体断言及预期失败。计划编写时仅验证片段语法；后续执行阶段已分别记录 RED/GREEN 结果，不能将二者混淆。
 - 1B–1F 尚未形成可执行计划，本文件不宣称整个第一阶段已经准备好一次性实现。
 
-2026-10-29 文档检查结果：5 个任务、27 个勾选步骤、5 组接口定义；10 个 Go 源码片段通过 gofmt 语法解析，JavaScript 脚本通过语法检查，13 个夹具预期通过独立 JavaScript 求值核对。Markdown 围栏与表格结构通过检查。尚未创建或运行 Go 实现，尚未运行上述 Go 测试。
+2026-10-29 计划编写时的文档检查结果：5 个任务、27 个勾选步骤、5 组接口定义；10 个 Go 源码片段通过 gofmt 语法解析，JavaScript 脚本通过语法检查，13 个夹具预期通过独立 JavaScript 求值核对。Markdown 围栏与表格结构通过检查。该检查发生在 Go 实现之前。
+
+## 执行记录
+
+执行分支为 `feat/wire-protocol`，起点为 `9ed2b86`。五项实现提交分别为：
+
+| 任务 | 提交 | 逐任务审查 |
+|---|---|---|
+| 1 | e9bed95 | 规格与质量通过 |
+| 2 | ea0d178 | 规格与质量通过 |
+| 3 | 9fe9014 | 规格与质量通过 |
+| 4 | cd0e4f2 | 规格与质量通过 |
+| 5 | 1f68af1 | 规格与质量通过 |
+
+每项均先观察计划要求的失败，再实现并验证通过。最终控制器在 `1f68af1` 上执行 `go test -race ./... -count=1`、`go vet ./...` 与 JavaScript 对照脚本，均通过。任务 5 另验证 `CGO_ENABLED=0 go test ./... -count=1` 通过；任务 2 的五秒 UTF-16 往返模糊测试完成 100457 次执行并通过。
+
+最终分支审查通过，无遗留问题；详细结果见 [执行报告](../reports/2026-10-29-phase-1a-execution.md)。此记录只涵盖 1A 数据边界，不表示存储或完整 harness 已实现。
