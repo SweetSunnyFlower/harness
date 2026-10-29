@@ -12,12 +12,17 @@
 | 1E JSONL | main/sidecar、恢复、回收、fsync | ✅ 契约/重开/回收/fsync 通过；TS 互操作属 1F |
 | 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 🟡 已实现并编译；未对真实服务器验证 |
 | 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 🟡 SQLite/JSONL 双向互操作均已验证；矩阵/基准待办 |
-| 2 持久化内核 | Session、事务、fork、任务树、调度、取消、恢复 | 待办 |
+| 2 持久化内核 | Session、事务、fork、任务树、调度、取消、恢复 | 🔨 Session 串行提交线已建；其余待办 |
 | 3 Agent 运行时 | 模型、输入队列、生成/工具循环、压缩、事件、用量 | 待办 |
 | 4 完整扩展 | Registry、Hooks、热更新、嵌套工具、内置工具、搜索、图像、遥测 | 待办 |
 | 5 Code Mode 与平台 | Go WASM、脚本重放、平台后端 | 待办 |
 
 验证口径：每个阶段 `go test ./... -count=1`、`go vet ./...`、`go test -race ./... -count=1`、`CGO_ENABLED=0 go test ./... -count=1` 全绿才标完成；跨语言项另跑 Node 对照。终端目标：完整能力清单验收，不跳过平台适配或 Code Mode。
+
+## Phase 2 进行中
+
+- `harness/session`：Session 对 Storage 串行化原子提交，Tx 在回调内累积写入；回调失败即回滚，MintID 与 Commit 均受同一把锁保护。并发提交测试 race-clean。
+- 尚未实现：文档草稿编辑、会话创建/分叉与所有权、任务树、调度、取消、恢复。
 
 ## 1D 完成说明
 
