@@ -11,7 +11,7 @@
 | 1D SQLite | schema v2 迁移、全部查询、文档 base/delta | ✅ 契约+迁移测试通过；TS 文件级互操作属 1F |
 | 1E JSONL | main/sidecar、恢复、回收、fsync | ✅ 契约/重开/回收/fsync 通过；TS 互操作属 1F |
 | 1G MySQL | 新增后端（上游无 MySQL，满足同一契约） | 🟡 已实现并编译；未对真实服务器验证 |
-| 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 🟡 SQLite 双向互操作已验证；JSONL 格式互操作已验证；矩阵/基准待办 |
+| 1F 综合 | 统一 runner、来源清单、兼容矩阵、基准 | 🟡 SQLite/JSONL 双向互操作均已验证；矩阵/基准待办 |
 | 2 持久化内核 | Session、事务、fork、任务树、调度、取消、恢复 | 待办 |
 | 3 Agent 运行时 | 模型、输入队列、生成/工具循环、压缩、事件、用量 | 待办 |
 | 4 完整扩展 | Registry、Hooks、热更新、嵌套工具、内置工具、搜索、图像、遥测 | 待办 |
@@ -37,5 +37,6 @@
 ## 1F 进行中
 
 - 双向 SQLite 互操作已验证：TS pi-durable（npm 1.4.0）写出的 SQLite 由 Go 读取并物化文档 delta；Go 写出的 SQLite 由 TS pi-durable 读取并物化到相同值。过程中修正了 content 列格式（base 存值、delta 存操作数组，kind/version 在列里）。
+- 双向 JSONL 互操作已验证：TS pi-durable 写出的 JSONL 由 Go 读取并物化；Go 写出的 JSONL 由 TS pi-durable 读取并物化到相同值。
 - `tools/compat/check-interop.mjs` 另以 node:sqlite + 独立 JS 重放核对 JSONL 格式。
-- 尚未做：JSONL 用真实 TS 包的双向互操作、完整兼容矩阵与基准。
+- 尚未做：完整兼容矩阵与基准；MySQL 待真实服务器。
