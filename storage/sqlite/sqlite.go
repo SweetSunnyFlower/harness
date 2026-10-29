@@ -133,6 +133,14 @@ type Store struct {
 	closed bool
 }
 
+type docAddress struct {
+	kind      string
+	scopeKind string
+	ownerID   int64
+	family    int
+	keyVal    string
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -147,7 +155,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := applyMigrations(db); err != nil {
+	if err := applyMigrations(db, schemaVersion); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -164,7 +172,7 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db, nextID: protocol.RecordID(idNum)}, nil
 }
 
-func applyMigrations(db *sql.DB) error {
+func applyMigrations(db *sql.DB, upTo int) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -183,10 +191,10 @@ func applyMigrations(db *sql.DB) error {
 	if err := tx.QueryRow(`SELECT version FROM durable_schema WHERE singleton = 1`).Scan(&version); err != nil {
 		return err
 	}
-	if version > schemaVersion {
-		return fmt.Errorf("sqlite schema version %d is newer than supported version %d", version, schemaVersion)
+	if version > upTo {
+		return fmt.Errorf("sqlite schema version %d is newer than supported version %d", version, upTo)
 	}
-	for v := version + 1; v <= schemaVersion; v++ {
+	for v := version + 1; v <= upTo; v++ {
 		statements := initialSchema
 		if v == 2 {
 			statements = sleepingTasksMigration
@@ -458,7 +466,7 @@ func (s *Store) checkDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq p
 		retiredCurrent bool
 		newCurrents    int
 	}
-	states := map[string]*keyState{}
+	states := map[docAddress]*keyState{}
 	for _, w := range writes {
 		var id protocol.DocumentID
 		var create *record.DocumentCreate
@@ -516,11 +524,11 @@ func (s *Store) checkDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq p
 				return fmt.Errorf("document %d version transition requires a base", id)
 			}
 		}
-		var key string
+		var key docAddress
 		if create != nil {
-			key = addressKeyFromCreate(*create)
+			key = addressOfCreate(*create)
 		} else {
-			key = addressKey(existingKind, existingScopeKind, existingOwnerID, existingFamily, existingKey)
+			key = docAddress{existingKind, existingScopeKind, existingOwnerID, existingFamily, existingKey}
 		}
 		ks := states[key]
 		if ks == nil {
@@ -548,10 +556,31 @@ func (s *Store) checkDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq p
 	return nil
 }
 
-func (s *Store) currentDocumentID(tx *sql.Tx, key string) *protocol.DocumentID {
-	// key encodes kind|scope|member, reconstructed below via addressKey on scan
-	// is expensive; instead use the documents_by_address index with a prefix scan.
-	return nil
+func addressOfCreate(c record.DocumentCreate) docAddress {
+	var out docAddress
+	out.kind = c.Kind
+	out.scopeKind = c.Scope.Kind
+	switch c.Scope.Kind {
+	case "conversation":
+		out.ownerID = int64(*c.Scope.ConversationID)
+	case "task":
+		out.ownerID = int64(*c.Scope.TaskID)
+	}
+	if c.Key != "" {
+		out.family = 1
+		out.keyVal = c.Key
+	}
+	return out
+}
+
+func (s *Store) currentDocumentID(tx *sql.Tx, a docAddress) *protocol.DocumentID {
+	var id protocol.DocumentID
+	err := tx.QueryRow(`SELECT id FROM documents WHERE kind = ? AND scope_kind = ? AND owner_id = ? AND family = ? AND key_value = ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+		a.kind, a.scopeKind, a.ownerID, a.family, a.keyVal).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	return &id
 }
 
 func (s *Store) applyDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq protocol.Seq) error {
@@ -589,8 +618,18 @@ func (s *Store) applyDocumentActionsTx(tx *sql.Tx, writes []storage.Write, seq p
 				return err
 			}
 			if w.Content.Kind == "base" {
-				if _, err := tx.Exec(`DELETE FROM document_revisions WHERE document_id = ? AND seq < ?`, w.ID, seq); err != nil {
+				var raw string
+				if err := tx.QueryRow(`SELECT record FROM documents WHERE id = ?`, w.ID).Scan(&raw); err != nil {
 					return err
+				}
+				var rec record.DocumentRecord
+				if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+					return err
+				}
+				if rec.Scope.Kind != "conversation" || rec.History == "latest" {
+					if _, err := tx.Exec(`DELETE FROM document_revisions WHERE document_id = ? AND seq < ?`, w.ID, seq); err != nil {
+						return err
+					}
 				}
 			}
 		case storage.DocumentRetireWrite:
@@ -776,16 +815,18 @@ func (s *Store) ScanConversations(ctx context.Context, q storage.ConversationQue
 		clauses = append(clauses, "owner_conversation_id = ?")
 		args = append(args, *q.OwnerConversationID)
 	}
-	order, after, err := decodeCursor(cursor, q.Order)
+	order, after, has, err := decodeCursor(cursor, q.Order)
 	if err != nil {
 		return storage.Page[record.ConversationRecord]{}, err
 	}
 	direction := "ASC"
 	if order == storage.Descending {
 		direction = "DESC"
-		clauses = append(clauses, "id < ?")
-		args = append(args, after)
-	} else {
+		if has {
+			clauses = append(clauses, "id < ?")
+			args = append(args, after)
+		}
+	} else if has {
 		clauses = append(clauses, "id > ?")
 		args = append(args, after)
 	}
@@ -832,29 +873,31 @@ func paged[T any](items []T, ids []protocol.RecordID, limit int, order storage.S
 	return storage.Page[T]{Items: items[:limit], Next: encodeCursor(ids[limit-1], order)}
 }
 
-func decodeCursor(cursor storage.Cursor, fallback storage.ScanOrder) (storage.ScanOrder, protocol.RecordID, error) {
+func decodeCursor(cursor storage.Cursor, fallback storage.ScanOrder) (storage.ScanOrder, protocol.RecordID, bool, error) {
 	order := fallback
 	if order == "" {
 		order = storage.Ascending
 	}
 	var after protocol.RecordID
+	has := false
 	if len(cursor) > 0 {
+		has = true
 		var c struct {
 			After protocol.RecordID `json:"after"`
 			Order storage.ScanOrder `json:"order"`
 		}
 		if err := json.Unmarshal(cursor, &c); err != nil {
-			return "", 0, err
+			return "", 0, false, err
 		}
 		after = c.After
 		if c.Order != "" {
 			if fallback != "" && fallback != c.Order {
-				return "", 0, fmt.Errorf("%w: cursor order mismatch", storage.ErrStorageRequest)
+				return "", 0, false, fmt.Errorf("%w: cursor order mismatch", storage.ErrStorageRequest)
 			}
 			order = c.Order
 		}
 	}
-	return order, after, nil
+	return order, after, has, nil
 }
 
 func encodeCursor(id protocol.RecordID, order storage.ScanOrder) storage.Cursor {
@@ -1058,20 +1101,38 @@ func (s *Store) ScanTasks(ctx context.Context, q storage.TaskQuery, limit int, c
 	if len(clauses) > 0 {
 		where = " WHERE " + strings.Join(clauses, " AND ")
 	}
-	order := "ASC"
-	if q.Order == storage.Descending {
-		order = "DESC"
+	order, after, has, err := decodeCursor(cursor, q.Order)
+	if err != nil {
+		return storage.Page[record.TaskRecord]{}, err
+	}
+	direction := "ASC"
+	if order == storage.Descending {
+		direction = "DESC"
+		if has {
+			clauses = append(clauses, "id < ?")
+			args = append(args, after)
+		}
+	} else if has {
+		clauses = append(clauses, "id > ?")
+		args = append(args, after)
+	}
+	if len(clauses) > 0 {
+		where = " WHERE " + strings.Join(clauses, " AND ")
+	} else {
+		where = ""
 	}
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, `SELECT record FROM tasks`+where+` ORDER BY id `+order+` LIMIT ?`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, record FROM tasks`+where+` ORDER BY id `+direction+` LIMIT ?`, args...)
 	if err != nil {
 		return storage.Page[record.TaskRecord]{}, err
 	}
 	defer rows.Close()
 	items := make([]record.TaskRecord, 0)
+	var ids []protocol.RecordID
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var id protocol.TaskID
+		if err := rows.Scan(&id, &raw); err != nil {
 			return storage.Page[record.TaskRecord]{}, err
 		}
 		var rec record.TaskRecord
@@ -1079,8 +1140,9 @@ func (s *Store) ScanTasks(ctx context.Context, q storage.TaskQuery, limit int, c
 			return storage.Page[record.TaskRecord]{}, err
 		}
 		items = append(items, rec)
+		ids = append(ids, protocol.RecordID(id))
 	}
-	return page(items, limit), nil
+	return paged(items, ids, limit, order), nil
 }
 
 func (s *Store) Submission(ctx context.Context, id protocol.SubmissionID) (*record.SubmissionRecord, error) {
@@ -1109,24 +1171,34 @@ func (s *Store) ScanSubmissions(ctx context.Context, q storage.SubmissionQuery, 
 		clauses = append(clauses, "status = ?")
 		args = append(args, q.Status)
 	}
-	where := ""
-	if len(clauses) > 0 {
-		where = " WHERE " + strings.Join(clauses, " AND ")
+	order, after, has, err := decodeCursor(cursor, q.Order)
+	if err != nil {
+		return storage.Page[record.SubmissionRecord]{}, err
 	}
-	order := "ASC"
-	if q.Order == storage.Descending {
-		order = "DESC"
+	direction := "ASC"
+	if order == storage.Descending {
+		direction = "DESC"
+		if has {
+			clauses = append(clauses, "id < ?")
+			args = append(args, after)
+		}
+	} else if has {
+		clauses = append(clauses, "id > ?")
+		args = append(args, after)
 	}
+	where := " WHERE " + strings.Join(clauses, " AND ")
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, `SELECT record FROM submissions`+where+` ORDER BY id `+order+` LIMIT ?`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, record FROM submissions`+where+` ORDER BY id `+direction+` LIMIT ?`, args...)
 	if err != nil {
 		return storage.Page[record.SubmissionRecord]{}, err
 	}
 	defer rows.Close()
 	items := make([]record.SubmissionRecord, 0)
+	var ids []protocol.RecordID
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var id protocol.SubmissionID
+		if err := rows.Scan(&id, &raw); err != nil {
 			return storage.Page[record.SubmissionRecord]{}, err
 		}
 		var rec record.SubmissionRecord
@@ -1134,8 +1206,9 @@ func (s *Store) ScanSubmissions(ctx context.Context, q storage.SubmissionQuery, 
 			return storage.Page[record.SubmissionRecord]{}, err
 		}
 		items = append(items, rec)
+		ids = append(ids, protocol.RecordID(id))
 	}
-	return page(items, limit), nil
+	return paged(items, ids, limit, order), nil
 }
 
 func (s *Store) SubmissionByRequest(ctx context.Context, conversationID protocol.ConversationID, requestID string) (*record.SubmissionRecord, error) {
@@ -1214,16 +1287,26 @@ func (s *Store) ScanDocuments(ctx context.Context, q storage.DocumentQuery, limi
 		clauses = append(clauses, "created_at <= ? AND (retired_at IS NULL OR retired_at > ?)")
 		args = append(args, q.At.Seq(), q.At.Seq())
 	}
+	_, after, has, err := decodeCursor(cursor, storage.Ascending)
+	if err != nil {
+		return storage.Page[record.DocumentRecord]{}, err
+	}
+	if has {
+		clauses = append(clauses, "id > ?")
+		args = append(args, after)
+	}
 	args = append(args, limit+1)
-	rows, err := s.db.QueryContext(ctx, `SELECT record FROM documents WHERE `+strings.Join(clauses, " AND ")+` ORDER BY id ASC LIMIT ?`, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, record FROM documents WHERE `+strings.Join(clauses, " AND ")+` ORDER BY id ASC LIMIT ?`, args...)
 	if err != nil {
 		return storage.Page[record.DocumentRecord]{}, err
 	}
 	defer rows.Close()
 	items := make([]record.DocumentRecord, 0)
+	var ids []protocol.RecordID
 	for rows.Next() {
 		var raw string
-		if err := rows.Scan(&raw); err != nil {
+		var id protocol.DocumentID
+		if err := rows.Scan(&id, &raw); err != nil {
 			return storage.Page[record.DocumentRecord]{}, err
 		}
 		var rec record.DocumentRecord
@@ -1231,6 +1314,7 @@ func (s *Store) ScanDocuments(ctx context.Context, q storage.DocumentQuery, limi
 			return storage.Page[record.DocumentRecord]{}, err
 		}
 		items = append(items, rec)
+		ids = append(ids, protocol.RecordID(id))
 	}
-	return page(items, limit), nil
+	return paged(items, ids, limit, storage.Ascending), nil
 }
