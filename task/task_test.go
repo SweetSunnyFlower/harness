@@ -121,3 +121,57 @@ func TestSchedulerWaitAndSleep(t *testing.T) {
 		t.Fatalf("parent terminal, got %#v", parentRec.State)
 	}
 }
+
+func TestRecoverRestartLimit(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	def := task.Definition{
+		Name: "app.recover", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Done(ctx, task.Outcome{Status: "completed"})
+			},
+		},
+	}
+	if err := task.Create(ctx, sess, def, 5, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	forceRunning := func() {
+		if _, err := sess.Commit(ctx, func(tx *session.Tx) error {
+			rec, _ := sess.Task(ctx, 5)
+			rec.State = record.TaskState{TaskStateFields: record.TaskStateFields{Status: "running", Checkpoint: []byte(`{"phase":"run"}`)}}
+			tx.Task(*rec)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forceRunning()
+	if err := task.Recover(ctx, sess, 3); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := sess.Task(ctx, 5)
+	if rec.State.Status != "pending" || rec.Restarts == nil || *rec.Restarts != 1 {
+		t.Fatalf("recover 1 %#v", rec)
+	}
+	forceRunning()
+	if err := task.Recover(ctx, sess, 3); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = sess.Task(ctx, 5)
+	if rec.Restarts == nil || *rec.Restarts != 2 {
+		t.Fatalf("recover 2 %#v", rec)
+	}
+	forceRunning()
+	if err := task.Recover(ctx, sess, 3); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = sess.Task(ctx, 5)
+	if rec.State.Status != "terminal" || rec.State.Outcome == nil || rec.State.Outcome.Status != "faulted" {
+		t.Fatalf("restart limit %#v", rec.State)
+	}
+}

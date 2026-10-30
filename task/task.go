@@ -254,3 +254,56 @@ func wake(ctx context.Context, sess *session.Session, rec record.TaskRecord) err
 	})
 	return err
 }
+
+// Recover reconciles tasks left "running" by a previous process. Each such
+// task has its restart count incremented; at restartLimit it ends faulted,
+// otherwise it returns to pending for the scheduler to run again.
+func Recover(ctx context.Context, sess *session.Session, restartLimit int) error {
+	page, err := sess.ScanTasks(ctx, storage.TaskQuery{Status: "running"}, 10000, nil)
+	if err != nil {
+		return err
+	}
+	for _, rec := range page.Items {
+		restarts := 0.0
+		if rec.Restarts != nil {
+			restarts = *rec.Restarts
+		}
+		restarts++
+		if restartLimit > 0 && int(restarts) >= restartLimit {
+			msg := "restart_limit"
+			if err := commitState(ctx, sess, rec.ID, record.TaskStateFields{
+				Status: "terminal",
+				Outcome: &record.TaskOutcome{TaskOutcomeFields: record.TaskOutcomeFields{
+					Status: "faulted",
+					Error:  &record.TaskOutcomeError{Message: msg},
+				}},
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := commitState(ctx, sess, rec.ID, record.TaskStateFields{
+			Status: "pending", Checkpoint: rec.State.Checkpoint,
+		}); err != nil {
+			return err
+		}
+		// Persist the incremented restart count.
+		if err := setRestarts(ctx, sess, rec.ID, restarts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func setRestarts(ctx context.Context, sess *session.Session, id protocol.TaskID, restarts float64) error {
+	_, err := sess.Commit(ctx, func(tx *session.Tx) error {
+		rec, err := sess.Task(ctx, id)
+		if err != nil || rec == nil {
+			return fmt.Errorf("task %d not found", id)
+		}
+		rec.Restarts = &restarts
+		tx.Task(*rec)
+		return nil
+	})
+	return err
+}
