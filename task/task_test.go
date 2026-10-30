@@ -279,3 +279,61 @@ func TestFailFastWaiting(t *testing.T) {
 		t.Fatalf("parent completed %#v", parentRec.State)
 	}
 }
+
+func TestCompletingUntilChildrenFinish(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	child := task.Definition{
+		Name: "app.child", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.SleepUntil(ctx, 1, task.Checkpoint{"phase": "done"})
+			},
+			"done": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Done(ctx, task.Outcome{Status: "completed"})
+			},
+		},
+	}
+	parent := task.Definition{
+		Name: "app.parent", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "finish"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"finish": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Done(ctx, task.Outcome{Status: "completed"})
+			},
+		},
+	}
+	parentID := protocol.TaskID(3)
+	if err := task.CreateOwned(ctx, sess, child, 5, 1, &parentID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Create(ctx, sess, parent, parentID, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	clock := int64(0)
+	sched := &task.Scheduler{Session: sess, Defs: map[string]task.Definition{"app.child": child, "app.parent": parent}, Now: func() int64 { return clock }}
+	// Parent finishes first but owns a live child, so it stays completing.
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	parentRec, _ := sess.Task(ctx, 3)
+	if parentRec.State.Status != "completing" || parentRec.State.Outcome == nil {
+		t.Fatalf("parent completing %#v", parentRec.State)
+	}
+	// Child sleeps until 1; parent remains completing while the child is live.
+	clock = 1
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	parentRec, _ = sess.Task(ctx, 3)
+	if parentRec.State.Status != "terminal" || parentRec.State.Outcome == nil || parentRec.State.Outcome.Status != "completed" {
+		t.Fatalf("parent terminal %#v", parentRec.State)
+	}
+}

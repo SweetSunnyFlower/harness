@@ -85,12 +85,33 @@ func (r *Runtime) Done(ctx context.Context, out Outcome) error {
 		}
 		result = b
 	}
-	return commitState(ctx, r.session, r.ID, record.TaskStateFields{
+	state := record.TaskStateFields{
 		Status: "terminal",
 		Outcome: &record.TaskOutcome{TaskOutcomeFields: record.TaskOutcomeFields{
 			Status: out.Status, Result: result, Error: out.Error, Reason: out.Reason,
 		}},
-	})
+	}
+	live, err := hasLiveOwned(ctx, r.session, r.ID)
+	if err != nil {
+		return err
+	}
+	if live {
+		state.Status = "completing"
+	}
+	return commitState(ctx, r.session, r.ID, state)
+}
+
+func hasLiveOwned(ctx context.Context, sess *session.Session, id protocol.TaskID) (bool, error) {
+	page, err := sess.ScanTasks(ctx, storage.TaskQuery{}, 10000, nil)
+	if err != nil {
+		return false, err
+	}
+	for _, rec := range page.Items {
+		if rec.Owner != nil && *rec.Owner == id && rec.State.Status != "terminal" && rec.State.Status != "completing" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func commitState(ctx context.Context, sess *session.Session, id protocol.TaskID, state record.TaskStateFields) error {
@@ -203,7 +224,7 @@ type Scheduler struct {
 }
 
 func (s *Scheduler) Resume(ctx context.Context) error {
-	for _, status := range []string{"pending", "running", "waiting", "sleeping"} {
+	for _, status := range []string{"pending", "running", "waiting", "sleeping", "completing"} {
 		page, err := s.Session.ScanTasks(ctx, storage.TaskQuery{Status: status}, 1000, nil)
 		if err != nil {
 			return err
@@ -272,6 +293,22 @@ func (s *Scheduler) resumeOne(ctx context.Context, rec record.TaskRecord) error 
 			return nil
 		}
 		return wake(ctx, s.Session, rec)
+	case "completing":
+		live, err := hasLiveOwned(ctx, s.Session, rec.ID)
+		if err != nil {
+			return err
+		}
+		if live {
+			return nil
+		}
+		_, err = s.Session.Commit(ctx, func(tx *session.Tx) error {
+			rec.State = record.TaskState{TaskStateFields: record.TaskStateFields{
+				Status: "terminal", Outcome: rec.State.Outcome,
+			}}
+			tx.Task(rec)
+			return nil
+		})
+		return err
 	}
 	return nil
 }
