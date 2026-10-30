@@ -15,12 +15,13 @@ import (
 // Harness runs a durable agent over a Session: every model and tool message
 // becomes an entry, so a turn can be recovered and resumed from storage.
 type Harness struct {
-	Session *session.Session
-	Model   agent.Model
-	Tools   map[string]ToolDef
-	Hooks   ToolHooks
-	events  map[string][]func(any)
-	usage   Usage
+	Session  *session.Session
+	Model    agent.Model
+	Tools    map[string]ToolDef
+	Registry *Registry
+	Hooks    ToolHooks
+	events   map[string][]func(any)
+	usage    Usage
 }
 
 // ToolDef is a tool plus its durable replay policy.
@@ -245,11 +246,19 @@ func (h *Harness) Compact(ctx context.Context, conversationID protocol.Conversat
 }
 
 func (h *Harness) modelTools() []agent.Tool {
-	out := make([]agent.Tool, 0, len(h.Tools))
-	for _, t := range h.Tools {
+	tools := h.toolSet()
+	out := make([]agent.Tool, 0, len(tools))
+	for _, t := range tools {
 		out = append(out, agent.Tool{Name: t.Name, Description: t.Description})
 	}
 	return out
+}
+
+func (h *Harness) toolSet() map[string]ToolDef {
+	if h.Registry != nil {
+		return h.Registry.Tools()
+	}
+	return h.Tools
 }
 
 // executeTool durably records the call intent before running the tool, then
@@ -264,7 +273,7 @@ func (h *Harness) executeTool(ctx context.Context, conversationID protocol.Conve
 	if err != nil {
 		return "tool error: " + err.Error()
 	}
-	tool, ok := h.Tools[call.Name]
+	tool, ok := h.toolSet()[call.Name]
 	replay := "unsafe"
 	if ok {
 		replay = tool.Replay

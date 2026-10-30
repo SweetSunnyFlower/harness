@@ -234,3 +234,46 @@ func TestToolHooks(t *testing.T) {
 		t.Fatalf("afterTool result %q", toolResult)
 	}
 }
+
+func TestHotReloadFromRegistry(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	reg := harness.NewRegistry()
+	reg.Install(harness.Extension{Name: "v1", Tools: map[string]harness.ToolDef{"t": {Name: "t", Execute: func(context.Context, map[string]any) (string, error) { return "v1", nil }}}})
+	model := &scripted{steps: []agent.Message{
+		{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "t"}}},
+		{Role: "assistant", Content: "done"},
+	}}
+	h := &harness.Harness{Session: sess, Model: model, Registry: reg}
+	if _, err := h.Prompt(ctx, 1, "one"); err != nil {
+		t.Fatal(err)
+	}
+	reg.Install(harness.Extension{Name: "v2", Tools: map[string]harness.ToolDef{"t": {Name: "t", Execute: func(context.Context, map[string]any) (string, error) { return "v2", nil }}}})
+	model.steps = []agent.Message{
+		{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c2", Name: "t"}}},
+		{Role: "assistant", Content: "done2"},
+	}
+	if _, err := h.Prompt(ctx, 1, "two"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := sess.ScanEntries(ctx, storage.EntryQuery{ConversationID: 1, Order: storage.Ascending}, 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	for _, e := range page.Items {
+		if e.Kind == "pi.tool-result" {
+			var msg agent.Message
+			if err := json.Unmarshal(e.Data, &msg); err != nil {
+				t.Fatal(err)
+			}
+			results = append(results, msg.Content)
+		}
+	}
+	if len(results) != 2 || results[0] != "v1" || results[1] != "v2" {
+		t.Fatalf("hot reload results %v", results)
+	}
+}
