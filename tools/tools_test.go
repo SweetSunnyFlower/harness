@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"harness/harness"
 	"harness/tools"
 )
 
@@ -30,5 +31,21 @@ func TestReadWriteBash(t *testing.T) {
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSearch(t *testing.T) {
+	tm := map[string]harness.ToolDef{
+		"read":       {Name: "read", Description: "Read a file as text."},
+		"write":      {Name: "write", Description: "Write text to a file."},
+		"bash":       {Name: "bash", Description: "Run a shell command."},
+		"read_bytes": {Name: "read_bytes", Description: "Read raw bytes from a file."},
+	}
+	got := tools.Search(tm, "read", 0)
+	if len(got) < 2 || got[0].Name != "read" {
+		t.Fatalf("search %#v", got)
+	}
+	if got[0].Name == "bash" {
+		t.Fatal("bash should not rank for read")
 	}
 }
