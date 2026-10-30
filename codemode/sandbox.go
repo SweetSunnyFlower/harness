@@ -148,7 +148,7 @@ func (s *Sandbox) Execute(parent context.Context, code string, opts ExecuteOptio
 	wasm := s.wasm
 	s.mu.Unlock()
 
-	parsed, err := parseCodemodeSource(code)
+	parsed, err := ParseCodemodeSource(code)
 	if err != nil {
 		return Result{}, err
 	}
@@ -171,7 +171,7 @@ func (s *Sandbox) Execute(parent context.Context, code string, opts ExecuteOptio
 	}
 	defer vm.Close(context.Background())
 
-	inst, err := vm.newInstance(execCtx, 0, 1)
+	inst, err := vm.newInstance(execCtx, opts.StartedAt, opts.Seed)
 	if err != nil {
 		return Result{}, &Error{Kind: ErrorSandbox, Message: "failed to start QuickJS: " + err.Error()}
 	}
@@ -321,7 +321,7 @@ type globalDescriptor struct {
 func (ex *execution) toolList() []toolDescriptor {
 	out := make([]toolDescriptor, 0, len(ex.sandbox.tools))
 	for _, t := range ex.sandbox.tools {
-		out = append(out, toolDescriptor{Name: t.Name, JSName: toCodemodeIdentifier(t.Name), Description: t.Description})
+		out = append(out, toolDescriptor{Name: t.Name, JSName: ToCodemodeIdentifier(t.Name), Description: t.Description})
 	}
 	return out
 }

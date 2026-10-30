@@ -1,9 +1,9 @@
 package codemode
 
-// toCodemodeIdentifier maps an arbitrary tool name to the JavaScript
+// ToCodemodeIdentifier maps an arbitrary tool name to the JavaScript
 // identifier the sandbox exposes, matching pi's toCodemodeIdentifier:
 // characters that are not valid in an identifier become "_".
-func toCodemodeIdentifier(name string) string {
+func ToCodemodeIdentifier(name string) string {
 	var out []byte
 	for i := 0; i < len(name); i++ {
 		c := name[i]

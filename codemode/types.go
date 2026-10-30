@@ -89,4 +89,8 @@ type SandboxOptions struct {
 type ExecuteOptions struct {
 	TimeoutMs int64
 	Store     map[string]any
+	// Seed and StartedAt fix the VM's Math.random sequence and Date clock so
+	// the same script with deterministic tools replays identically.
+	Seed      uint32
+	StartedAt int64
 }

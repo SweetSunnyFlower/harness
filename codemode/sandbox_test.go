@@ -181,6 +181,31 @@ func TestSandboxGlobal(t *testing.T) {
 	}
 }
 
+func TestSandboxDeterministicReplay(t *testing.T) {
+	s := newTestSandbox(t)
+	code := `text(String(Date.now())); text(String(Math.random())); return "ok"`
+	opts := codemode.ExecuteOptions{Seed: 42, StartedAt: 1_234_567}
+	a, err := s.Execute(context.Background(), code, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Execute(context.Background(), code, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.OK || !b.OK || a.Value != b.Value {
+		t.Fatalf("replay diverged: a=%+v b=%+v", a, b)
+	}
+	if len(a.Output) != 2 || len(b.Output) != 2 {
+		t.Fatalf("unexpected output: a=%+v b=%+v", a.Output, b.Output)
+	}
+	for i := range a.Output {
+		if a.Output[i].Text != b.Output[i].Text {
+			t.Fatalf("replay output diverged: %q vs %q", a.Output[i].Text, b.Output[i].Text)
+		}
+	}
+}
+
 func mustWasm(t *testing.T) []byte {
 	t.Helper()
 	wasm, err := os.ReadFile(wasmPath())

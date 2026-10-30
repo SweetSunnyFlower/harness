@@ -31,7 +31,7 @@ func (e *CodemodeSourceError) Error() string { return e.Message }
 
 const maxTimeoutMs = 2_147_483_647
 
-func parseCodemodeSource(input string) (ParsedCodemodeSource, error) {
+func ParseCodemodeSource(input string) (ParsedCodemodeSource, error) {
 	if strings.TrimSpace(input) == "" {
 		return ParsedCodemodeSource{}, &CodemodeSourceError{Message: "Expected JavaScript source text (non-empty). Provide JS only, optionally with a first line `// @options: {\"max_output_tokens\": 1000}`."}
 	}
