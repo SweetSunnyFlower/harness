@@ -14,7 +14,7 @@ import (
 func ReadTool() harness.ToolDef {
 	return harness.ToolDef{
 		Name:        "read",
-		Description: "Read a file as text.",
+		Description: "Read the contents of a text file. Use offset/limit for large files.",
 		Replay:      "safe",
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
@@ -28,9 +28,42 @@ func ReadTool() harness.ToolDef {
 			if err != nil {
 				return "", err
 			}
-			return string(b), nil
+			text := string(b)
+			offset := intArg(args["offset"], 0)
+			limit := intArg(args["limit"], 0)
+			if offset > 0 || limit > 0 {
+				text = selectLines(text, offset, limit)
+			}
+			truncated := TruncateHead(text, DefaultMaxLines, DefaultMaxBytes)
+			return truncated.Content, nil
 		},
 	}
+}
+
+func intArg(v any, fallback int) int {
+	n, ok := v.(float64)
+	if !ok {
+		return fallback
+	}
+	return int(n)
+}
+
+// selectLines implements a 1-indexed offset/limit slice over LF-split lines,
+// mirroring the semantics the model-facing read tool documents.
+func selectLines(text string, offset, limit int) string {
+	lines := strings.Split(text, "\n")
+	start := offset - 1
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(lines) {
+		return ""
+	}
+	end := len(lines)
+	if limit > 0 && start+limit < end {
+		end = start + limit
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // WriteTool writes text to a file.
