@@ -18,6 +18,7 @@ type Harness struct {
 	Session *session.Session
 	Model   agent.Model
 	Tools   map[string]ToolDef
+	Hooks   ToolHooks
 	events  map[string][]func(any)
 	usage   Usage
 }
@@ -28,6 +29,13 @@ type ToolDef struct {
 	Description string
 	Replay      string // "safe" | "unsafe"
 	Execute     func(ctx context.Context, args map[string]any) (string, error)
+}
+
+// ToolHooks wraps every tool execution. BeforeTool may return a non-empty
+// block message, which skips execution; AfterTool transforms the result.
+type ToolHooks struct {
+	BeforeTool func(ctx context.Context, call agent.ToolCall) (block string)
+	AfterTool  func(ctx context.Context, call agent.ToolCall, result string) string
 }
 
 // Usage counts harness operations.
@@ -247,6 +255,11 @@ func (h *Harness) modelTools() []agent.Tool {
 // executeTool durably records the call intent before running the tool, then
 // writes the tool task's result.
 func (h *Harness) executeTool(ctx context.Context, conversationID protocol.ConversationID, call agent.ToolCall) string {
+	if h.Hooks.BeforeTool != nil {
+		if block := h.Hooks.BeforeTool(ctx, call); block != "" {
+			return h.commitToolResult(ctx, conversationID, call, "blocked: "+block)
+		}
+	}
 	taskID, err := h.Session.MintID(ctx)
 	if err != nil {
 		return "tool error: " + err.Error()
@@ -270,12 +283,39 @@ func (h *Harness) executeTool(ctx context.Context, conversationID protocol.Conve
 		return "tool error: " + err.Error()
 	}
 	if !ok {
-		return fmt.Sprintf("unknown tool %q", call.Name)
+		return h.finishToolTask(ctx, taskID, fmt.Sprintf("unknown tool %q", call.Name))
 	}
 	out, err := tool.Execute(ctx, call.Args)
 	if err != nil {
 		out = "tool error: " + err.Error()
 	}
+	if h.Hooks.AfterTool != nil {
+		out = h.Hooks.AfterTool(ctx, call, out)
+	}
+	return h.finishToolTask(ctx, taskID, out)
+}
+
+// commitToolResult records a blocked tool call without executing it.
+func (h *Harness) commitToolResult(ctx context.Context, conversationID protocol.ConversationID, call agent.ToolCall, out string) string {
+	taskID, err := h.Session.MintID(ctx)
+	if err != nil {
+		return "tool error: " + err.Error()
+	}
+	argsJSON, _ := json.Marshal(call.Args)
+	checkpoint := map[string]any{"name": call.Name, "args": json.RawMessage(argsJSON), "replay": "unsafe", "callID": call.ID}
+	cpJSON, _ := json.Marshal(checkpoint)
+	h.Session.Commit(ctx, func(tx *session.Tx) error {
+		tx.Task(record.TaskRecord{TaskFields: record.TaskFields{
+			ID: protocol.TaskID(taskID), ConversationID: conversationID, Kind: "pi.tool", Version: 1,
+			Input: json.RawMessage(argsJSON), Background: false, AbortRequested: false,
+			State: record.TaskState{TaskStateFields: record.TaskStateFields{Status: "pending", Checkpoint: cpJSON}},
+		}})
+		return nil
+	})
+	return h.finishToolTask(ctx, taskID, out)
+}
+
+func (h *Harness) finishToolTask(ctx context.Context, taskID protocol.RecordID, out string) string {
 	resultJSON, _ := json.Marshal(map[string]any{"output": out})
 	h.Session.Commit(ctx, func(tx *session.Tx) error {
 		rec, err := h.Session.Task(ctx, protocol.TaskID(taskID))

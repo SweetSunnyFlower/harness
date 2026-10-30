@@ -2,6 +2,7 @@ package harness_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -191,5 +192,45 @@ func TestStreamingDeltas(t *testing.T) {
 	}
 	if !reflect.DeepEqual(deltas, []string{"hel", "lo"}) {
 		t.Fatalf("deltas %v", deltas)
+	}
+}
+
+func TestToolHooks(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	model := &scripted{steps: []agent.Message{
+		{Role: "assistant", ToolCalls: []agent.ToolCall{{ID: "c1", Name: "echo", Args: map[string]any{"s": "hi"}}}},
+		{Role: "assistant", Content: "done"},
+	}}
+	h := &harness.Harness{
+		Session: sess,
+		Model:   model,
+		Tools:   map[string]harness.ToolDef{"echo": {Name: "echo", Execute: func(context.Context, map[string]any) (string, error) { return "raw", nil }}},
+		Hooks: harness.ToolHooks{
+			AfterTool: func(ctx context.Context, call agent.ToolCall, result string) string { return result + "!" },
+		},
+	}
+	if _, err := h.Prompt(ctx, 1, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := sess.ScanEntries(ctx, storage.EntryQuery{ConversationID: 1, Order: storage.Ascending}, 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolResult string
+	for _, e := range page.Items {
+		if e.Kind == "pi.tool-result" {
+			var msg agent.Message
+			if err := json.Unmarshal(e.Data, &msg); err != nil {
+				t.Fatal(err)
+			}
+			toolResult = msg.Content
+		}
+	}
+	if toolResult != "raw!" {
+		t.Fatalf("afterTool result %q", toolResult)
 	}
 }
