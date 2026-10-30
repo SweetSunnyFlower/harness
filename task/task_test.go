@@ -337,3 +337,27 @@ func TestCompletingUntilChildrenFinish(t *testing.T) {
 		t.Fatalf("parent terminal %#v", parentRec.State)
 	}
 }
+
+func TestBackgroundFlag(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	def := task.Definition{
+		Name: "app.work", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Commit(ctx, task.Checkpoint{"phase": "run"})
+			},
+		},
+	}
+	if err := task.CreateBackground(ctx, sess, def, 5, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := sess.Task(ctx, 5)
+	if err != nil || rec == nil || !rec.Background {
+		t.Fatalf("background flag %#v %v", rec, err)
+	}
+}

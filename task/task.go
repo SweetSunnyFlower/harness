@@ -155,6 +155,29 @@ func CreateOwned(ctx context.Context, sess *session.Session, def Definition, id 
 	return err
 }
 
+// CreateBackground writes a conversation-owned background task, which is
+// excluded from ordinary cascading aborts.
+func CreateBackground(ctx context.Context, sess *session.Session, def Definition, id protocol.TaskID, conversationID protocol.ConversationID, input any) error {
+	cp := def.Initial(input)
+	cpJSON, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	_, err = sess.Commit(ctx, func(tx *session.Tx) error {
+		tx.Task(record.TaskRecord{TaskFields: record.TaskFields{
+			ID: id, ConversationID: conversationID, Kind: def.Name, Version: def.Version,
+			Input: inputJSON, Background: true, AbortRequested: false,
+			State: record.TaskState{TaskStateFields: record.TaskStateFields{Status: "pending", Checkpoint: cpJSON}},
+		}})
+		return nil
+	})
+	return err
+}
+
 // Run drives one task through runnable phases until it becomes terminal or
 // parks in a waiting or sleeping state.
 func Run(ctx context.Context, sess *session.Session, def Definition, id protocol.TaskID) (*Outcome, error) {
