@@ -151,3 +151,75 @@ func TestForkVisibility(t *testing.T) {
 		t.Fatalf("entry past fork cutoff must be invisible: %v %v", got, err)
 	}
 }
+
+func TestForkCopiesConversationDocuments(t *testing.T) {
+	ctx := context.Background()
+	s := session.New(storage.NewMemory())
+	conv1 := protocol.ConversationID(1)
+	conv2 := protocol.ConversationID(2)
+	if _, err := s.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: conv1}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(ctx, func(tx *session.Tx) error {
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 5, ConversationID: conv1, Kind: "root"}})
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 10, ConversationID: conv1, Kind: "cut"}})
+		tx.CreateDocument(
+			record.DocumentCreate{DocumentCreateFields: record.DocumentCreateFields{
+				ID: 100, Kind: "app.doc",
+				Scope:   record.DocumentScope{DocumentScopeFields: record.DocumentScopeFields{Kind: "conversation", ConversationID: &conv1}},
+				History: "rewindable", Fork: "asOf",
+			}},
+			storage.DocumentContent{Version: 1, Kind: "base", Value: map[string]any{"v": 1.0}},
+		)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(ctx, func(tx *session.Tx) error {
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 20, ConversationID: conv1, Kind: "later"}})
+		tx.CreateDocument(
+			record.DocumentCreate{DocumentCreateFields: record.DocumentCreateFields{
+				ID: 101, Kind: "app.doc", Key: "live",
+				Scope:   record.DocumentScope{DocumentScopeFields: record.DocumentScopeFields{Kind: "conversation", ConversationID: &conv1}},
+				History: "latest", Fork: "current",
+			}},
+			storage.DocumentContent{Version: 1, Kind: "base", Value: map[string]any{"c": 1.0}},
+		)
+		return tx.EditDocument(ctx, 100, func(current any) (any, error) {
+			m := current.(map[string]any)
+			m["v"] = 2.0
+			return m, nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Fork(ctx, conv1, 10, conv2); err != nil {
+		t.Fatal(err)
+	}
+	scope2 := record.DocumentScope{DocumentScopeFields: record.DocumentScopeFields{Kind: "conversation", ConversationID: &conv2}}
+	page, err := s.ScanDocuments(ctx, storage.DocumentQuery{Scope: scope2, At: storage.CurrentPoint()}, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected 2 copied documents, got %d", len(page.Items))
+	}
+	values := map[string]any{}
+	for _, rec := range page.Items {
+		if rec.Scope.Kind != "conversation" || rec.Scope.ConversationID == nil || *rec.Scope.ConversationID != conv2 {
+			t.Fatalf("copy not scoped to child: %+v", rec)
+		}
+		doc, err := s.Document(ctx, rec.ID, storage.CurrentPoint())
+		if err != nil || doc == nil {
+			t.Fatalf("copied document %d unreadable: %v", rec.ID, err)
+		}
+		values[rec.Kind+"/"+rec.Key] = doc.Value
+	}
+	if !reflect.DeepEqual(values["app.doc/"], map[string]any{"v": 1.0}) {
+		t.Fatalf("asOf copy must capture the fork-point value, got %v", values["app.doc/"])
+	}
+	if !reflect.DeepEqual(values["app.doc/live"], map[string]any{"c": 1.0}) {
+		t.Fatalf("current copy wrong, got %v", values["app.doc/live"])
+	}
+}

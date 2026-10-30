@@ -55,11 +55,21 @@ func (s *Session) CreateConversation(ctx context.Context, rec record.Conversatio
 // Fork creates a child conversation that inherits the parent's history up to
 // and including the entry at `at`.
 func (s *Session) Fork(ctx context.Context, parentID protocol.ConversationID, at protocol.EntryID, childID protocol.ConversationID) (protocol.Seq, error) {
-	return s.CreateConversation(ctx, record.ConversationRecord{
-		ConversationFields: record.ConversationFields{
-			ID:     childID,
-			Parent: &record.ConversationParent{ConversationID: parentID, At: at},
-		},
+	return s.Commit(ctx, func(tx *Tx) error {
+		tx.Conversation(record.ConversationRecord{
+			ConversationFields: record.ConversationFields{
+				ID:     childID,
+				Parent: &record.ConversationParent{ConversationID: parentID, At: at},
+			},
+		})
+		copies, err := tx.forkCopies(ctx, parentID, at, childID)
+		if err != nil {
+			return err
+		}
+		for _, copy := range copies {
+			tx.CopyDocument(copy.record, copy.source)
+		}
+		return nil
 	})
 }
 
@@ -95,6 +105,27 @@ func (t *Tx) ChangeDocument(id protocol.DocumentID, content storage.DocumentCont
 
 func (t *Tx) RetireDocument(id protocol.DocumentID) {
 	t.writes = append(t.writes, storage.DocumentRetireWrite{ID: id})
+}
+
+// CopyDocument stages a forked conversation document: the backend materializes
+// the source at its point and stores it as a new independent base.
+func (t *Tx) CopyDocument(rec record.DocumentCreate, source storage.DocumentCopySource) {
+	t.writes = append(t.writes, storage.DocumentCopyWrite{Record: rec, Source: source})
+}
+
+// MintID allocates an ID without leaving the surrounding commit.
+func (t *Tx) MintID(ctx context.Context) (protocol.RecordID, error) {
+	return t.store.MintID(ctx)
+}
+
+// ConversationEntry reads an entry visible from a conversation.
+func (t *Tx) ConversationEntry(ctx context.Context, conversationID protocol.ConversationID, id protocol.EntryID) (*storage.EntryAt, error) {
+	return t.store.ConversationEntry(ctx, conversationID, id)
+}
+
+// ScanDocuments scans document records through the mutation line.
+func (t *Tx) ScanDocuments(ctx context.Context, q storage.DocumentQuery, limit int, cursor storage.Cursor) (storage.Page[record.DocumentRecord], error) {
+	return t.store.ScanDocuments(ctx, q, limit, cursor)
 }
 
 // Document reads the committed value of a document incarnation through the
@@ -189,4 +220,87 @@ func (s *Session) ScanDocuments(ctx context.Context, q storage.DocumentQuery, li
 
 func (s *Session) Close(ctx context.Context) error {
 	return s.store.Close(ctx)
+}
+
+type forkCopy struct {
+	record record.DocumentCreate
+	source storage.DocumentCopySource
+}
+
+// forkCopies selects the conversation-scoped documents a fork must copy, first
+// the asOf-policy documents at the fork entry's commit sequence, then the
+// current-policy documents at the current point.
+func (t *Tx) forkCopies(ctx context.Context, parentID protocol.ConversationID, at protocol.EntryID, childID protocol.ConversationID) ([]forkCopy, error) {
+	entry, err := t.store.ConversationEntry(ctx, parentID, at)
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("entry %d is not visible from conversation %d", at, parentID)
+	}
+	scope := record.DocumentScope{DocumentScopeFields: record.DocumentScopeFields{
+		Kind:           "conversation",
+		ConversationID: &parentID,
+	}}
+	var copies []forkCopy
+	seen := map[string]bool{}
+	if err := collectForkCopies(ctx, t.store, scope, storage.PointAt(entry.CommitSeq), "asOf", childID, seen, &copies); err != nil {
+		return nil, err
+	}
+	if err := collectForkCopies(ctx, t.store, scope, storage.CurrentPoint(), "current", childID, seen, &copies); err != nil {
+		return nil, err
+	}
+	return copies, nil
+}
+
+func collectForkCopies(
+	ctx context.Context,
+	store storage.Storage,
+	scope record.DocumentScope,
+	at storage.DocumentPoint,
+	policy string,
+	childID protocol.ConversationID,
+	seen map[string]bool,
+	copies *[]forkCopy,
+) error {
+	var cursor storage.Cursor
+	for {
+		page, err := store.ScanDocuments(ctx, storage.DocumentQuery{Scope: scope, At: at}, 256, cursor)
+		if err != nil {
+			return err
+		}
+		for _, source := range page.Items {
+			if source.Scope.Kind != "conversation" || source.Fork != policy {
+				continue
+			}
+			id, err := store.MintID(ctx)
+			if err != nil {
+				return err
+			}
+			rec := record.DocumentCreate{DocumentCreateFields: record.DocumentCreateFields{
+				ID:      protocol.DocumentID(id),
+				Kind:    source.Kind,
+				Key:     source.Key,
+				Scope:   record.DocumentScope{DocumentScopeFields: record.DocumentScopeFields{Kind: "conversation", ConversationID: &childID}},
+				History: source.History,
+				Fork:    source.Fork,
+			}}
+			address := source.Kind
+			if source.Key != "" {
+				address += "/" + source.Key
+			}
+			if seen[address] {
+				return fmt.Errorf("fork selects multiple source documents for %s", address)
+			}
+			seen[address] = true
+			*copies = append(*copies, forkCopy{
+				record: rec,
+				source: storage.DocumentCopySource{ID: source.ID, At: at},
+			})
+		}
+		cursor = page.Next
+		if len(cursor) == 0 {
+			return nil
+		}
+	}
 }
