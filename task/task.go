@@ -241,9 +241,18 @@ func outcomeOf(rec *record.TaskRecord) *Outcome {
 // Scheduler drives pending, waiting and sleeping tasks for a set of
 // definitions. It is a minimal foreground scheduler: Resume makes one pass.
 type Scheduler struct {
-	Session *session.Session
-	Defs    map[string]Definition
-	Now     func() int64
+	Session  *session.Session
+	Defs     map[string]Definition
+	Now      func() int64
+	OnReport func(Report)
+}
+
+// Report is a non-fatal failure notice from the scheduler.
+type Report struct {
+	Kind   string // task_faulted, task_interrupted, ...
+	TaskID protocol.TaskID
+	Task   string
+	Error  error
 }
 
 func (s *Scheduler) Resume(ctx context.Context) error {
@@ -269,7 +278,20 @@ func (s *Scheduler) resumeOne(ctx context.Context, rec record.TaskRecord) error 
 	switch rec.State.Status {
 	case "pending", "running":
 		_, err := runPhase(ctx, s.Session, def, &rec)
-		return err
+		if err != nil {
+			if cerr := commitState(ctx, s.Session, rec.ID, record.TaskStateFields{
+				Status: "terminal",
+				Outcome: &record.TaskOutcome{TaskOutcomeFields: record.TaskOutcomeFields{
+					Status: "faulted",
+					Error:  &record.TaskOutcomeError{Message: err.Error()},
+				}},
+			}); cerr != nil {
+				return cerr
+			}
+			s.report(Report{Kind: "task_faulted", TaskID: rec.ID, Task: rec.Kind, Error: err})
+			return nil
+		}
+		return nil
 	case "waiting":
 		var on []protocol.TaskID
 		if err := json.Unmarshal(rec.State.On, &on); err != nil {
@@ -334,6 +356,12 @@ func (s *Scheduler) resumeOne(ctx context.Context, rec record.TaskRecord) error 
 		return err
 	}
 	return nil
+}
+
+func (s *Scheduler) report(r Report) {
+	if s.OnReport != nil {
+		s.OnReport(r)
+	}
 }
 
 func wake(ctx context.Context, sess *session.Session, rec record.TaskRecord) error {

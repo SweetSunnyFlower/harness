@@ -2,6 +2,7 @@ package task_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"harness/protocol"
@@ -335,6 +336,56 @@ func TestCompletingUntilChildrenFinish(t *testing.T) {
 	parentRec, _ = sess.Task(ctx, 3)
 	if parentRec.State.Status != "terminal" || parentRec.State.Outcome == nil || parentRec.State.Outcome.Status != "completed" {
 		t.Fatalf("parent terminal %#v", parentRec.State)
+	}
+}
+
+func TestFaultReportsAndContinues(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	bad := task.Definition{
+		Name: "app.bad", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(context.Context, *task.Runtime, task.Checkpoint) error { return errors.New("boom") },
+		},
+	}
+	good := task.Definition{
+		Name: "app.good", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Done(ctx, task.Outcome{Status: "completed"})
+			},
+		},
+	}
+	if err := task.Create(ctx, sess, bad, 3, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Create(ctx, sess, good, 4, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	var reports []task.Report
+	sched := &task.Scheduler{
+		Session:  sess,
+		Defs:     map[string]task.Definition{"app.bad": bad, "app.good": good},
+		OnReport: func(r task.Report) { reports = append(reports, r) },
+	}
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	badRec, _ := sess.Task(ctx, 3)
+	if badRec.State.Status != "terminal" || badRec.State.Outcome == nil || badRec.State.Outcome.Status != "faulted" {
+		t.Fatalf("bad faulted %#v", badRec.State)
+	}
+	goodRec, _ := sess.Task(ctx, 4)
+	if goodRec.State.Status != "terminal" {
+		t.Fatalf("good should still complete: %#v", goodRec.State)
+	}
+	if len(reports) != 1 || reports[0].Kind != "task_faulted" || reports[0].TaskID != 3 {
+		t.Fatalf("reports %#v", reports)
 	}
 }
 
