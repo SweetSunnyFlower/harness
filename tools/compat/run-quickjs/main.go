@@ -103,5 +103,17 @@ func main() {
 		fmt.Println("FAIL: eval produced an exception")
 		os.Exit(1)
 	}
-	fmt.Println("PASS: quickjs evaluated a script")
+	lenPtr := uint32(call("wasm_malloc", 4))
+	cstr := uint32(call("qjs_get_string_len", uint64(result), uint64(lenPtr)))
+	n, _ := mem.ReadUint32Le(lenPtr)
+	data, _ := mem.Read(cstr, n)
+	got := string(data)
+	call("qjs_free_cstring", uint64(cstr))
+	call("wasm_free", uint64(lenPtr))
+	call("qjs_free_value", uint64(result))
+	if got != "2" {
+		fmt.Printf("FAIL: result %q, want 2\n", got)
+		os.Exit(1)
+	}
+	fmt.Println("PASS: quickjs evaluated 1+1 = 2")
 }

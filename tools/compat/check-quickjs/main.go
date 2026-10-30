@@ -24,12 +24,12 @@ func main() {
 	fmt.Printf("imports=%d\n", len(mod.ImportedFunctions()))
 	for _, fn := range mod.ImportedFunctions() {
 		modName, name, _ := fn.Import()
-		fmt.Printf("%s.%s\n", modName, name)
+		fmt.Printf("%s.%s params=%v results=%v\n", modName, name, fn.ParamTypes(), fn.ResultTypes())
 	}
 	fmt.Printf("exports=%d\n", len(mod.ExportedFunctions()))
 	for _, fn := range mod.ExportedFunctions() {
 		for _, name := range fn.ExportNames() {
-			fmt.Printf("%s\n", name)
+			fmt.Printf("%s params=%v results=%v\n", name, fn.ParamTypes(), fn.ResultTypes())
 		}
 	}
 }
