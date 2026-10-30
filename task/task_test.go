@@ -175,3 +175,40 @@ func TestRecoverRestartLimit(t *testing.T) {
 		t.Fatalf("restart limit %#v", rec.State)
 	}
 }
+
+func TestCascadingAbort(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	def := task.Definition{
+		Name: "app.work", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Commit(ctx, task.Checkpoint{"phase": "run"})
+			},
+		},
+		Abort: func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+			return rt.Done(ctx, task.Outcome{Status: "aborted"})
+		},
+	}
+	parent := protocol.TaskID(3)
+	if err := task.Create(ctx, sess, def, parent, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.CreateOwned(ctx, sess, def, 4, 1, &parent, nil); err != nil {
+		t.Fatal(err)
+	}
+	sched := &task.Scheduler{Session: sess, Defs: map[string]task.Definition{"app.work": def}}
+	if err := sched.Abort(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []protocol.TaskID{4, 3} {
+		rec, err := sess.Task(ctx, id)
+		if err != nil || rec == nil || rec.State.Status != "terminal" || rec.State.Outcome == nil || rec.State.Outcome.Status != "aborted" {
+			t.Fatalf("task %d aborted %#v %v", id, rec, err)
+		}
+	}
+}

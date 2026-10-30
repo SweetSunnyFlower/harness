@@ -108,6 +108,12 @@ func commitState(ctx context.Context, sess *session.Session, id protocol.TaskID,
 
 // Create writes a pending task with its initial checkpoint.
 func Create(ctx context.Context, sess *session.Session, def Definition, id protocol.TaskID, conversationID protocol.ConversationID, input any) error {
+	return CreateOwned(ctx, sess, def, id, conversationID, nil, input)
+}
+
+// CreateOwned writes a pending task with an owning task, for structured
+// concurrency and cascading abort.
+func CreateOwned(ctx context.Context, sess *session.Session, def Definition, id protocol.TaskID, conversationID protocol.ConversationID, owner *protocol.TaskID, input any) error {
 	cp := def.Initial(input)
 	cpJSON, err := json.Marshal(cp)
 	if err != nil {
@@ -120,7 +126,7 @@ func Create(ctx context.Context, sess *session.Session, def Definition, id proto
 	_, err = sess.Commit(ctx, func(tx *session.Tx) error {
 		tx.Task(record.TaskRecord{TaskFields: record.TaskFields{
 			ID: id, ConversationID: conversationID, Kind: def.Name, Version: def.Version,
-			Input: inputJSON, Background: false, AbortRequested: false,
+			Input: inputJSON, Owner: owner, Background: false, AbortRequested: false,
 			State: record.TaskState{TaskStateFields: record.TaskStateFields{Status: "pending", Checkpoint: cpJSON}},
 		}})
 		return nil
@@ -306,4 +312,64 @@ func setRestarts(ctx context.Context, sess *session.Session, id protocol.TaskID,
 		return nil
 	})
 	return err
+}
+
+// Abort aborts a task and, bottom-up, every live task it owns.
+func (s *Scheduler) Abort(ctx context.Context, id protocol.TaskID) error {
+	owned, err := s.collectOwned(ctx, id)
+	if err != nil {
+		return err
+	}
+	for i := len(owned) - 1; i >= 0; i-- {
+		if err := s.abortOne(ctx, owned[i]); err != nil {
+			return err
+		}
+	}
+	return s.abortOne(ctx, id)
+}
+
+func (s *Scheduler) collectOwned(ctx context.Context, id protocol.TaskID) ([]protocol.TaskID, error) {
+	page, err := s.Session.ScanTasks(ctx, storage.TaskQuery{}, 10000, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []protocol.TaskID
+	var walk func(protocol.TaskID)
+	walk = func(parent protocol.TaskID) {
+		for _, rec := range page.Items {
+			if rec.Owner != nil && *rec.Owner == parent {
+				out = append(out, rec.ID)
+				walk(rec.ID)
+			}
+		}
+	}
+	walk(id)
+	return out, nil
+}
+
+func (s *Scheduler) abortOne(ctx context.Context, id protocol.TaskID) error {
+	rec, err := s.Session.Task(ctx, id)
+	if err != nil || rec == nil {
+		return fmt.Errorf("task %d not found", id)
+	}
+	switch rec.State.Status {
+	case "terminal", "completing":
+		return nil
+	}
+	def, ok := s.Defs[rec.Kind]
+	if ok && def.Abort != nil {
+		var cp Checkpoint
+		if err := json.Unmarshal(rec.State.Checkpoint, &cp); err == nil {
+			if err := def.Abort(ctx, &Runtime{session: s.Session, ID: id}, cp); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	return commitState(ctx, s.Session, id, record.TaskStateFields{
+		Status: "terminal",
+		Outcome: &record.TaskOutcome{TaskOutcomeFields: record.TaskOutcomeFields{
+			Status: "aborted",
+		}},
+	})
 }
