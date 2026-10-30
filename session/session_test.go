@@ -111,3 +111,43 @@ func TestEditDocumentProducesDelta(t *testing.T) {
 		t.Fatalf("value %v want %v", doc.Value, want)
 	}
 }
+
+func TestForkVisibility(t *testing.T) {
+	ctx := context.Background()
+	s := session.New(storage.NewMemory())
+	if _, err := s.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(ctx, func(tx *session.Tx) error {
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 5, ConversationID: 1, Kind: "root"}})
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 10, ConversationID: 1, Kind: "m1"}})
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 20, ConversationID: 1, Kind: "m2"}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Fork(ctx, 1, 10, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(ctx, func(tx *session.Tx) error {
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{ID: 30, ConversationID: 2, Kind: "child"}})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ScanEntries(ctx, storage.EntryQuery{ConversationID: 2, Order: storage.Ascending}, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []protocol.EntryID
+	for _, e := range page.Items {
+		ids = append(ids, e.ID)
+	}
+	want := []protocol.EntryID{5, 10, 30}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("fork visible %v want %v", ids, want)
+	}
+	if got, err := s.ConversationEntry(ctx, 2, 20); err != nil || got != nil {
+		t.Fatalf("entry past fork cutoff must be invisible: %v %v", got, err)
+	}
+}

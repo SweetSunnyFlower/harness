@@ -41,6 +41,28 @@ func (s *Session) MintID(ctx context.Context) (protocol.RecordID, error) {
 	return s.store.MintID(ctx)
 }
 
+// CreateConversation atomically writes a new conversation record.
+func (s *Session) CreateConversation(ctx context.Context, rec record.ConversationRecord) (protocol.Seq, error) {
+	return s.Commit(ctx, func(tx *Tx) error {
+		if !rec.ID.Valid() {
+			return fmt.Errorf("conversation id must be a positive safe integer")
+		}
+		tx.Conversation(rec)
+		return nil
+	})
+}
+
+// Fork creates a child conversation that inherits the parent's history up to
+// and including the entry at `at`.
+func (s *Session) Fork(ctx context.Context, parentID protocol.ConversationID, at protocol.EntryID, childID protocol.ConversationID) (protocol.Seq, error) {
+	return s.CreateConversation(ctx, record.ConversationRecord{
+		ConversationFields: record.ConversationFields{
+			ID:     childID,
+			Parent: &record.ConversationParent{ConversationID: parentID, At: at},
+		},
+	})
+}
+
 // Tx accumulates writes for one atomic commit.
 type Tx struct {
 	writes []storage.Write

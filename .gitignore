@@ -2,3 +2,4 @@
 #   go run ./tools/compat/emit-delta
 delta/testdata/emitted-delta.json
 build/
+.DS_Store
