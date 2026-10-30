@@ -28,6 +28,8 @@ func main() {
 	}
 	fmt.Printf("exports=%d\n", len(mod.ExportedFunctions()))
 	for _, fn := range mod.ExportedFunctions() {
-		fmt.Printf("%s\n", fn.Name())
+		for _, name := range fn.ExportNames() {
+			fmt.Printf("%s\n", name)
+		}
 	}
 }
