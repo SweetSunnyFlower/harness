@@ -21,6 +21,9 @@ func ReadTool() harness.ToolDef {
 			if path == "" {
 				return "", fmt.Errorf("path required")
 			}
+			if mime := DetectImageMimeTypeOf(path); mime != "" {
+				return "", fmt.Errorf("%s is an image (%s); reading images is not supported", path, mime)
+			}
 			b, err := os.ReadFile(path)
 			if err != nil {
 				return "", err
