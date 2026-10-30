@@ -22,7 +22,9 @@ func Search(toolMap map[string]harness.ToolDef, query string, limit int) []harne
 		descLower := strings.ToLower(tool.Description)
 		score := 0
 		if query != "" {
-			if strings.Contains(nameLower, query) {
+			if nameLower == query {
+				score += 200
+			} else if strings.Contains(nameLower, query) {
 				score += 100
 			}
 			if strings.Contains(descLower, query) {
