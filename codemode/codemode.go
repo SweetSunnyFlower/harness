@@ -56,10 +56,23 @@ type clockHolder struct {
 }
 
 type hostHolder struct {
-	funcs map[string]hostFunc
+	funcs map[string]HostFunc
 }
 
-type hostFunc func(ctx context.Context, m api.Module, args []string) (string, error)
+// HostCall carries one invocation of a host function registered with
+// [RegisterHostFunc]. `This` and `Args` are borrowed JSValue handles owned by
+// the QuickJS trampoline: they are only valid until the host function returns.
+type HostCall struct {
+	Ctx  context.Context
+	M    api.Module
+	This uint32
+	Args []uint32
+}
+
+// HostFunc implements a JavaScript-callable function. It returns an owned
+// JSValue handle that the trampoline adopts, or a non-nil error to throw an
+// exception into the guest.
+type HostFunc func(HostCall) (uint32, error)
 
 // VM runs quickjs-wasi with a deterministic clock and seeded randomness.
 type VM struct {
@@ -72,7 +85,7 @@ type VM struct {
 func Open(ctx context.Context, wasm []byte) (*VM, error) {
 	rt := wazero.NewRuntime(ctx)
 	holder := &clockHolder{}
-	hosts := &hostHolder{funcs: map[string]hostFunc{}}
+	hosts := &hostHolder{funcs: map[string]HostFunc{}}
 
 	wasi := rt.NewHostModuleBuilder("wasi_snapshot_preview1")
 	wasi.NewFunctionBuilder().WithFunc(func(ctx context.Context, m api.Module, clockID uint32, precision uint64, resultPtr uint32) uint32 {
@@ -108,22 +121,25 @@ func Open(ctx context.Context, wasm []byte) (*VM, error) {
 		nameBytes, _ := m.Memory().Read(namePtr, nameLen)
 		fn := hosts.funcs[string(nameBytes)]
 		if fn == nil {
+			msg := "Host callback is not registered: " + string(nameBytes)
+			msgHandle, _ := newJSString(ctx, m, msg)
+			_, _ = m.ExportedFunction("qjs_throw").Call(ctx, uint64(msgHandle))
+			_, _ = m.ExportedFunction("qjs_free_value").Call(ctx, uint64(msgHandle))
 			return 0
 		}
-		args := make([]string, 0, argc)
+		args := make([]uint32, 0, argc)
 		for i := uint32(0); i < argc; i++ {
 			valPtr, _ := m.Memory().ReadUint32Le(argvPtr + i*4)
-			s, err := readJSString(ctx, m, valPtr)
-			if err != nil {
-				s = ""
-			}
-			args = append(args, s)
+			args = append(args, valPtr)
 		}
-		result, err := fn(ctx, m, args)
+		result, err := fn(HostCall{Ctx: ctx, M: m, This: thisPtr, Args: args})
 		if err != nil {
+			msgHandle, _ := newJSString(ctx, m, err.Error())
+			_, _ = m.ExportedFunction("qjs_throw").Call(ctx, uint64(msgHandle))
+			_, _ = m.ExportedFunction("qjs_free_value").Call(ctx, uint64(msgHandle))
 			return 0
 		}
-		return writeJSString(ctx, m, result)
+		return result
 	}).Export("host_call")
 
 	if _, err := wasi.Instantiate(ctx); err != nil {
@@ -143,21 +159,31 @@ func Open(ctx context.Context, wasm []byte) (*VM, error) {
 }
 
 func (v *VM) Eval(ctx context.Context, code string, startedAt int64, seed uint32) (string, error) {
-	inst, err := v.runtime.InstantiateModule(ctx, v.compiled, wazero.NewModuleConfig())
+	inst, err := v.newInstance(ctx, startedAt, seed)
 	if err != nil {
 		return "", err
 	}
-	defer inst.Close(ctx)
+	defer inst.close()
+	return v.evalString(ctx, inst.m, code)
+}
+
+func (v *VM) newInstance(ctx context.Context, startedAt int64, seed uint32) (*instance, error) {
+	mod, err := v.runtime.InstantiateModule(ctx, v.compiled, wazero.NewModuleConfig())
+	if err != nil {
+		return nil, err
+	}
 	clock := &virtualClock{creating: true, startedAt: startedAt, now: startedAt, seed: seed}
 	v.holder.clock = clock
-	if _, err := inst.ExportedFunction("_initialize").Call(ctx); err != nil {
-		return "", err
+	if _, err := mod.ExportedFunction("_initialize").Call(ctx); err != nil {
+		mod.Close(ctx)
+		return nil, err
 	}
-	if _, err := inst.ExportedFunction("qjs_init").Call(ctx); err != nil {
-		return "", err
+	if _, err := mod.ExportedFunction("qjs_init").Call(ctx); err != nil {
+		mod.Close(ctx)
+		return nil, err
 	}
 	clock.creating = false
-	return v.evalString(ctx, inst, code)
+	return &instance{m: mod, mem: mod.Memory(), ctx: ctx}, nil
 }
 
 func (v *VM) evalString(ctx context.Context, inst api.Module, code string) (string, error) {
@@ -229,6 +255,11 @@ func readJSString(ctx context.Context, m api.Module, val uint32) (string, error)
 }
 
 func writeJSString(ctx context.Context, m api.Module, s string) uint32 {
+	val, _ := newJSString(ctx, m, s)
+	return val
+}
+
+func newJSString(ctx context.Context, m api.Module, s string) (uint32, error) {
 	call := func(name string, args ...uint64) (uint64, error) {
 		res, err := m.ExportedFunction(name).Call(ctx, args...)
 		if err != nil {
@@ -240,15 +271,18 @@ func writeJSString(ctx context.Context, m api.Module, s string) uint32 {
 		return res[0], nil
 	}
 	b := []byte(s)
-	ptr, _ := call("wasm_malloc", uint64(len(b)+1))
+	ptr, err := call("wasm_malloc", uint64(len(b)+1))
+	if err != nil {
+		return 0, err
+	}
 	m.Memory().Write(uint32(ptr), b)
 	m.Memory().WriteByte(uint32(ptr)+uint32(len(b)), 0)
-	val, _ := call("qjs_new_string", uint64(ptr), uint64(len(b)))
+	val, err := call("qjs_new_string", uint64(ptr), uint64(len(b)))
 	_, _ = call("wasm_free", uint64(ptr))
-	return uint32(val)
+	return uint32(val), err
 }
 
-func (v *VM) RegisterHostFunc(name string, fn hostFunc) {
+func (v *VM) RegisterHostFunc(name string, fn HostFunc) {
 	v.hosts.funcs[name] = fn
 }
 
@@ -256,8 +290,16 @@ func (v *VM) RegisterHostFunc(name string, fn hostFunc) {
 // function named `name` as a global that receives string arguments and
 // returns a string.
 func (v *VM) EvalWithHost(ctx context.Context, code, name string, seed uint32, startedAt int64, host func(args []string) string) (string, error) {
-	v.RegisterHostFunc(name, func(ctx context.Context, m api.Module, args []string) (string, error) {
-		return host(args), nil
+	v.RegisterHostFunc(name, func(call HostCall) (uint32, error) {
+		args := make([]string, 0, len(call.Args))
+		for _, arg := range call.Args {
+			s, err := readJSString(call.Ctx, call.M, arg)
+			if err != nil {
+				s = ""
+			}
+			args = append(args, s)
+		}
+		return newJSString(call.Ctx, call.M, host(args))
 	})
 	inst, err := v.runtime.InstantiateModule(ctx, v.compiled, wazero.NewModuleConfig())
 	if err != nil {
