@@ -126,7 +126,15 @@ func (h *Harness) appendEntry(ctx context.Context, conversationID protocol.Conve
 }
 
 func (h *Harness) messages(ctx context.Context, conversationID protocol.ConversationID) ([]agent.Message, error) {
-	page, err := h.Session.ScanEntries(ctx, storage.EntryQuery{ConversationID: conversationID, Order: storage.Ascending}, 10000, nil)
+	marker, err := h.Session.FindLatestHeadMarker(ctx, conversationID, nil)
+	if err != nil {
+		return nil, err
+	}
+	var minID *protocol.EntryID
+	if marker != nil && marker.Head != nil {
+		minID = marker.Head
+	}
+	page, err := h.Session.ScanEntries(ctx, storage.EntryQuery{ConversationID: conversationID, MinEntryID: minID, Order: storage.Ascending}, 10000, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +150,49 @@ func (h *Harness) messages(ctx context.Context, conversationID protocol.Conversa
 		out = append(out, msg)
 	}
 	return out, nil
+}
+
+// Compact summarizes the oldest entries into one pi.compaction entry and sets
+// its head to the first retained entry, so model context starts there.
+func (h *Harness) Compact(ctx context.Context, conversationID protocol.ConversationID, keep int, summarize func([]agent.Message) string) error {
+	page, err := h.Session.ScanEntries(ctx, storage.EntryQuery{ConversationID: conversationID, Order: storage.Ascending}, 10000, nil)
+	if err != nil {
+		return err
+	}
+	if len(page.Items) <= keep || keep < 1 {
+		return nil
+	}
+	compacted := page.Items[:len(page.Items)-keep]
+	retained := page.Items[len(page.Items)-keep:]
+	var msgs []agent.Message
+	for _, e := range compacted {
+		if len(e.Data) == 0 {
+			continue
+		}
+		var msg agent.Message
+		if err := json.Unmarshal(e.Data, &msg); err != nil {
+			return err
+		}
+		msgs = append(msgs, msg)
+	}
+	summary := summarize(msgs)
+	id, err := h.Session.MintID(ctx)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(agent.Message{Role: "assistant", Content: summary})
+	if err != nil {
+		return err
+	}
+	head := retained[0].ID
+	_, err = h.Session.Commit(ctx, func(tx *session.Tx) error {
+		tx.Entry(record.EntryRecord{EntryFields: record.EntryFields{
+			ID: protocol.EntryID(id), ConversationID: conversationID, Kind: "pi.compaction",
+			Data: data, Head: &head,
+		}})
+		return nil
+	})
+	return err
 }
 
 func (h *Harness) modelTools() []agent.Tool {

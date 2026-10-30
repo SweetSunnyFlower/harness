@@ -101,3 +101,36 @@ func TestSubmitDeduplication(t *testing.T) {
 		t.Fatalf("submission %#v %v", sub, err)
 	}
 }
+
+func TestCompactionSetsHead(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	h := &harness.Harness{Session: sess, Model: &scripted{steps: []agent.Message{
+		{Role: "assistant", Content: "a"},
+		{Role: "assistant", Content: "b"},
+	}}, Tools: map[string]harness.ToolDef{}}
+	if _, err := h.Prompt(ctx, 1, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Prompt(ctx, 1, "two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Compact(ctx, 1, 1, func(msgs []agent.Message) string { return "summary" }); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := sess.FindLatestHeadMarker(ctx, 1, nil)
+	if err != nil || marker == nil || marker.Kind != "pi.compaction" {
+		t.Fatalf("compaction marker %#v %v", marker, err)
+	}
+	page, err := sess.ScanEntries(ctx, storage.EntryQuery{ConversationID: 1, MinEntryID: marker.Head, Order: storage.Ascending}, 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// context after compaction: the compacted summary entry plus retained tail.
+	if len(page.Items) < 2 {
+		t.Fatalf("post-compaction context %d", len(page.Items))
+	}
+}
