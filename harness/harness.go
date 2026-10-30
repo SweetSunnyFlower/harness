@@ -57,6 +57,56 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 	}
 }
 
+// Submit admits a user input with optional deduplication, runs the generation
+// to completion, and settles the submission as done with its answer entry.
+func (h *Harness) Submit(ctx context.Context, conversationID protocol.ConversationID, input, requestID string) (protocol.SubmissionID, error) {
+	if requestID != "" {
+		if existing, err := h.Session.SubmissionByRequest(ctx, conversationID, requestID); err == nil && existing != nil {
+			return existing.ID, nil
+		}
+	}
+	id, err := h.Session.MintID(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := h.Session.Commit(ctx, func(tx *session.Tx) error {
+		tx.Submission(record.SubmissionRecord{SubmissionFields: record.SubmissionFields{
+			ID: protocol.SubmissionID(id), ConversationID: conversationID, RequestID: requestID,
+			Type: "input", Status: "queued",
+		}})
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	if _, err := h.Prompt(ctx, conversationID, input); err != nil {
+		return 0, err
+	}
+	page, err := h.Session.ScanEntries(ctx, storage.EntryQuery{ConversationID: conversationID, Order: storage.Descending}, 1, nil)
+	if err != nil || len(page.Items) == 0 {
+		return 0, fmt.Errorf("no answer entry after generation")
+	}
+	answerID := page.Items[0].ID
+	userPage, err := h.Session.ScanEntries(ctx, storage.EntryQuery{ConversationID: conversationID, Order: storage.Ascending}, 1, nil)
+	if err != nil || len(userPage.Items) == 0 {
+		return 0, fmt.Errorf("no user entry")
+	}
+	entryID := userPage.Items[0].ID
+	sub, err := h.Session.Submission(ctx, protocol.SubmissionID(id))
+	if err != nil || sub == nil {
+		return 0, fmt.Errorf("submission %d missing", id)
+	}
+	sub.Status = "done"
+	sub.Entry = &entryID
+	sub.Answer = &answerID
+	if _, err := h.Session.Commit(ctx, func(tx *session.Tx) error {
+		tx.Submission(*sub)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return protocol.SubmissionID(id), nil
+}
+
 func (h *Harness) appendEntry(ctx context.Context, conversationID protocol.ConversationID, kind string, msg agent.Message) error {
 	id, err := h.Session.MintID(ctx)
 	if err != nil {

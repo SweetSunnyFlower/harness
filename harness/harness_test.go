@@ -62,3 +62,34 @@ func TestDurableGeneration(t *testing.T) {
 		}
 	}
 }
+
+func TestSubmitDeduplication(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	model := &scripted{steps: []agent.Message{
+		{Role: "assistant", Content: "ok"},
+		{Role: "assistant", Content: "again"},
+	}}
+	h := &harness.Harness{Session: sess, Model: model, Tools: map[string]agent.Tool{}}
+	id1, err := h.Submit(ctx, 1, "hi", "req-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := h.Submit(ctx, 1, "hi", "req-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 != id2 {
+		t.Fatalf("dedup ids %d %d", id1, id2)
+	}
+	if len(model.steps) != 1 {
+		t.Fatalf("duplicate submission must not run generation again: %d steps left", len(model.steps))
+	}
+	sub, err := sess.Submission(ctx, id1)
+	if err != nil || sub == nil || sub.Status != "done" || sub.Answer == nil {
+		t.Fatalf("submission %#v %v", sub, err)
+	}
+}
