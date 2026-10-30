@@ -158,3 +158,38 @@ func TestEvents(t *testing.T) {
 		t.Fatalf("events %v want %v", got, want)
 	}
 }
+
+type streamingModel struct {
+	deltas []string
+	final  string
+}
+
+func (m *streamingModel) GenerateStream(ctx context.Context, messages []agent.Message, tools []agent.Tool, onDelta func(string)) (agent.Message, error) {
+	for _, d := range m.deltas {
+		onDelta(d)
+	}
+	return agent.Message{Role: "assistant", Content: m.final}, nil
+}
+
+func (m *streamingModel) Generate(ctx context.Context, messages []agent.Message, tools []agent.Tool) (agent.Message, error) {
+	return agent.Message{Role: "assistant", Content: m.final}, nil
+}
+
+func TestStreamingDeltas(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	model := &streamingModel{deltas: []string{"hel", "lo"}, final: "hello"}
+	h := &harness.Harness{Session: sess, Model: model, Tools: map[string]harness.ToolDef{}}
+	var deltas []string
+	h.On("delta", func(p any) { deltas = append(deltas, p.(string)) })
+	answer, err := h.Prompt(ctx, 1, "hi")
+	if err != nil || answer != "hello" {
+		t.Fatalf("%q %v", answer, err)
+	}
+	if !reflect.DeepEqual(deltas, []string{"hel", "lo"}) {
+		t.Fatalf("deltas %v", deltas)
+	}
+}

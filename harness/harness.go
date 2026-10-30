@@ -47,7 +47,7 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 		if err != nil {
 			return "", err
 		}
-		resp, err := h.Model.Generate(ctx, messages, h.modelTools())
+		resp, err := h.generate(ctx, messages, h.modelTools())
 		if err != nil {
 			return "", err
 		}
@@ -69,6 +69,15 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 			}
 		}
 	}
+}
+
+func (h *Harness) generate(ctx context.Context, messages []agent.Message, tools []agent.Tool) (agent.Message, error) {
+	if sm, ok := h.Model.(agent.StreamingModel); ok {
+		return sm.GenerateStream(ctx, messages, tools, func(delta string) {
+			h.emit("delta", delta)
+		})
+	}
+	return h.Model.Generate(ctx, messages, tools)
 }
 
 // Usage returns the accumulated operation counts.

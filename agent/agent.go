@@ -32,6 +32,12 @@ type Model interface {
 	Generate(ctx context.Context, messages []Message, tools []Tool) (Message, error)
 }
 
+// StreamingModel generates an assistant message while emitting content
+// deltas through onDelta.
+type StreamingModel interface {
+	GenerateStream(ctx context.Context, messages []Message, tools []Tool, onDelta func(string)) (Message, error)
+}
+
 // Agent runs the model-tool loop: call the model, execute any requested
 // tools, append their results, and repeat until the model answers without
 // tool calls.
