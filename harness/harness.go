@@ -19,6 +19,7 @@ type Harness struct {
 	Model   agent.Model
 	Tools   map[string]ToolDef
 	events  map[string][]func(any)
+	usage   Usage
 }
 
 // ToolDef is a tool plus its durable replay policy.
@@ -27,6 +28,12 @@ type ToolDef struct {
 	Description string
 	Replay      string // "safe" | "unsafe"
 	Execute     func(ctx context.Context, args map[string]any) (string, error)
+}
+
+// Usage counts harness operations.
+type Usage struct {
+	ModelCalls int
+	ToolCalls  int
 }
 
 // Prompt appends a user input and runs the generation loop to completion.
@@ -44,6 +51,7 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 		if err != nil {
 			return "", err
 		}
+		h.usage.ModelCalls++
 		if err := h.appendEntry(ctx, conversationID, "pi.assistant", resp); err != nil {
 			return "", err
 		}
@@ -52,6 +60,7 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 			return resp.Content, nil
 		}
 		for _, call := range resp.ToolCalls {
+			h.usage.ToolCalls++
 			h.emit("tool_start", call)
 			content := h.executeTool(ctx, conversationID, call)
 			h.emit("tool_end", agent.Message{Role: "tool", ToolID: call.ID, Content: content})
@@ -61,6 +70,9 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 		}
 	}
 }
+
+// Usage returns the accumulated operation counts.
+func (h *Harness) Usage() Usage { return h.usage }
 
 // On registers a listener for an event kind. Listeners are called in
 // registration order, synchronously.

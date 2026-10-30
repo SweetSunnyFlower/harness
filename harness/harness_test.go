@@ -101,6 +101,9 @@ func TestSubmitDeduplication(t *testing.T) {
 	if err != nil || sub == nil || sub.Status != "done" || sub.Answer == nil {
 		t.Fatalf("submission %#v %v", sub, err)
 	}
+	if h.Usage().ModelCalls != 1 {
+		t.Fatalf("usage %#v", h.Usage())
+	}
 }
 
 func TestCompactionSetsHead(t *testing.T) {
