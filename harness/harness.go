@@ -18,6 +18,7 @@ type Harness struct {
 	Session *session.Session
 	Model   agent.Model
 	Tools   map[string]ToolDef
+	events  map[string][]func(any)
 }
 
 // ToolDef is a tool plus its durable replay policy.
@@ -30,6 +31,7 @@ type ToolDef struct {
 
 // Prompt appends a user input and runs the generation loop to completion.
 func (h *Harness) Prompt(ctx context.Context, conversationID protocol.ConversationID, input string) (string, error) {
+	h.emit("user", agent.Message{Role: "user", Content: input})
 	if err := h.appendEntry(ctx, conversationID, "pi.user", agent.Message{Role: "user", Content: input}); err != nil {
 		return "", err
 	}
@@ -45,15 +47,33 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 		if err := h.appendEntry(ctx, conversationID, "pi.assistant", resp); err != nil {
 			return "", err
 		}
+		h.emit("assistant", resp)
 		if len(resp.ToolCalls) == 0 {
 			return resp.Content, nil
 		}
 		for _, call := range resp.ToolCalls {
+			h.emit("tool_start", call)
 			content := h.executeTool(ctx, conversationID, call)
+			h.emit("tool_end", agent.Message{Role: "tool", ToolID: call.ID, Content: content})
 			if err := h.appendEntry(ctx, conversationID, "pi.tool-result", agent.Message{Role: "tool", ToolID: call.ID, Content: content}); err != nil {
 				return "", err
 			}
 		}
+	}
+}
+
+// On registers a listener for an event kind. Listeners are called in
+// registration order, synchronously.
+func (h *Harness) On(kind string, fn func(payload any)) {
+	if h.events == nil {
+		h.events = map[string][]func(any){}
+	}
+	h.events[kind] = append(h.events[kind], fn)
+}
+
+func (h *Harness) emit(kind string, payload any) {
+	for _, fn := range h.events[kind] {
+		fn(payload)
 	}
 }
 

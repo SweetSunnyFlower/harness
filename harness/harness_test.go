@@ -2,6 +2,7 @@ package harness_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"harness/agent"
@@ -132,5 +133,25 @@ func TestCompactionSetsHead(t *testing.T) {
 	// context after compaction: the compacted summary entry plus retained tail.
 	if len(page.Items) < 2 {
 		t.Fatalf("post-compaction context %d", len(page.Items))
+	}
+}
+
+func TestEvents(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	model := &scripted{steps: []agent.Message{{Role: "assistant", Content: "ok"}}}
+	h := &harness.Harness{Session: sess, Model: model, Tools: map[string]harness.ToolDef{}}
+	var got []string
+	h.On("user", func(any) { got = append(got, "user") })
+	h.On("assistant", func(any) { got = append(got, "assistant") })
+	if _, err := h.Prompt(ctx, 1, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"user", "assistant"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("events %v want %v", got, want)
 	}
 }
