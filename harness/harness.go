@@ -17,7 +17,15 @@ import (
 type Harness struct {
 	Session *session.Session
 	Model   agent.Model
-	Tools   map[string]agent.Tool
+	Tools   map[string]ToolDef
+}
+
+// ToolDef is a tool plus its durable replay policy.
+type ToolDef struct {
+	Name        string
+	Description string
+	Replay      string // "safe" | "unsafe"
+	Execute     func(ctx context.Context, args map[string]any) (string, error)
 }
 
 // Prompt appends a user input and runs the generation loop to completion.
@@ -30,7 +38,7 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 		if err != nil {
 			return "", err
 		}
-		resp, err := h.Model.Generate(ctx, messages, toolList(h.Tools))
+		resp, err := h.Model.Generate(ctx, messages, h.modelTools())
 		if err != nil {
 			return "", err
 		}
@@ -41,15 +49,7 @@ func (h *Harness) Prompt(ctx context.Context, conversationID protocol.Conversati
 			return resp.Content, nil
 		}
 		for _, call := range resp.ToolCalls {
-			tool, ok := h.Tools[call.Name]
-			content := fmt.Sprintf("unknown tool %q", call.Name)
-			if ok {
-				if out, err := tool.Execute(ctx, call.Args); err == nil {
-					content = out
-				} else {
-					content = "tool error: " + err.Error()
-				}
-			}
+			content := h.executeTool(ctx, conversationID, call)
 			if err := h.appendEntry(ctx, conversationID, "pi.tool-result", agent.Message{Role: "tool", ToolID: call.ID, Content: content}); err != nil {
 				return "", err
 			}
@@ -144,10 +144,60 @@ func (h *Harness) messages(ctx context.Context, conversationID protocol.Conversa
 	return out, nil
 }
 
-func toolList(tools map[string]agent.Tool) []agent.Tool {
-	out := make([]agent.Tool, 0, len(tools))
-	for _, t := range tools {
-		out = append(out, t)
+func (h *Harness) modelTools() []agent.Tool {
+	out := make([]agent.Tool, 0, len(h.Tools))
+	for _, t := range h.Tools {
+		out = append(out, agent.Tool{Name: t.Name, Description: t.Description})
 	}
+	return out
+}
+
+// executeTool durably records the call intent before running the tool, then
+// writes the tool task's result.
+func (h *Harness) executeTool(ctx context.Context, conversationID protocol.ConversationID, call agent.ToolCall) string {
+	taskID, err := h.Session.MintID(ctx)
+	if err != nil {
+		return "tool error: " + err.Error()
+	}
+	tool, ok := h.Tools[call.Name]
+	replay := "unsafe"
+	if ok {
+		replay = tool.Replay
+	}
+	argsJSON, _ := json.Marshal(call.Args)
+	checkpoint := map[string]any{"name": call.Name, "args": json.RawMessage(argsJSON), "replay": replay, "callID": call.ID}
+	cpJSON, _ := json.Marshal(checkpoint)
+	if _, err := h.Session.Commit(ctx, func(tx *session.Tx) error {
+		tx.Task(record.TaskRecord{TaskFields: record.TaskFields{
+			ID: protocol.TaskID(taskID), ConversationID: conversationID, Kind: "pi.tool", Version: 1,
+			Input: json.RawMessage(argsJSON), Background: false, AbortRequested: false,
+			State: record.TaskState{TaskStateFields: record.TaskStateFields{Status: "pending", Checkpoint: cpJSON}},
+		}})
+		return nil
+	}); err != nil {
+		return "tool error: " + err.Error()
+	}
+	if !ok {
+		return fmt.Sprintf("unknown tool %q", call.Name)
+	}
+	out, err := tool.Execute(ctx, call.Args)
+	if err != nil {
+		out = "tool error: " + err.Error()
+	}
+	resultJSON, _ := json.Marshal(map[string]any{"output": out})
+	h.Session.Commit(ctx, func(tx *session.Tx) error {
+		rec, err := h.Session.Task(ctx, protocol.TaskID(taskID))
+		if err != nil || rec == nil {
+			return fmt.Errorf("tool task %d missing", taskID)
+		}
+		rec.State = record.TaskState{TaskStateFields: record.TaskStateFields{
+			Status: "terminal",
+			Outcome: &record.TaskOutcome{TaskOutcomeFields: record.TaskOutcomeFields{
+				Status: "completed", Result: resultJSON,
+			}},
+		}}
+		tx.Task(*rec)
+		return nil
+	})
 	return out
 }

@@ -34,8 +34,8 @@ func TestDurableGeneration(t *testing.T) {
 	h := &harness.Harness{
 		Session: sess,
 		Model:   model,
-		Tools: map[string]agent.Tool{
-			"upper": {Name: "upper", Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Tools: map[string]harness.ToolDef{
+			"upper": {Name: "upper", Replay: "safe", Execute: func(ctx context.Context, args map[string]any) (string, error) {
 				return args["s"].(string) + "!", nil
 			}},
 		},
@@ -61,6 +61,14 @@ func TestDurableGeneration(t *testing.T) {
 			t.Fatalf("kinds %v want %v", kinds, want)
 		}
 	}
+	tasks, err := sess.ScanTasks(ctx, storage.TaskQuery{Kind: "pi.tool"}, 10, nil)
+	if err != nil || len(tasks.Items) != 1 {
+		t.Fatalf("tool tasks %v %v", tasks, err)
+	}
+	toolTask := tasks.Items[0]
+	if toolTask.State.Status != "terminal" || toolTask.State.Outcome == nil || toolTask.State.Outcome.Status != "completed" {
+		t.Fatalf("tool task terminal %#v", toolTask.State)
+	}
 }
 
 func TestSubmitDeduplication(t *testing.T) {
@@ -73,7 +81,7 @@ func TestSubmitDeduplication(t *testing.T) {
 		{Role: "assistant", Content: "ok"},
 		{Role: "assistant", Content: "again"},
 	}}
-	h := &harness.Harness{Session: sess, Model: model, Tools: map[string]agent.Tool{}}
+	h := &harness.Harness{Session: sess, Model: model, Tools: map[string]harness.ToolDef{}}
 	id1, err := h.Submit(ctx, 1, "hi", "req-1")
 	if err != nil {
 		t.Fatal(err)
