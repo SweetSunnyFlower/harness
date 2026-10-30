@@ -212,3 +212,70 @@ func TestCascadingAbort(t *testing.T) {
 		}
 	}
 }
+
+func TestFailFastWaiting(t *testing.T) {
+	ctx := context.Background()
+	sess := session.New(storage.NewMemory())
+	if _, err := sess.CreateConversation(ctx, record.ConversationRecord{ConversationFields: record.ConversationFields{ID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	failing := task.Definition{
+		Name: "app.failing", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Done(ctx, task.Outcome{Status: "failed", Error: &record.TaskOutcomeError{Message: "boom"}})
+			},
+		},
+	}
+	work := task.Definition{
+		Name: "app.work", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "run"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"run": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Commit(ctx, task.Checkpoint{"phase": "run"})
+			},
+		},
+	}
+	parent := task.Definition{
+		Name: "app.parent", Version: 1,
+		Initial: func(any) task.Checkpoint { return task.Checkpoint{"phase": "wait"} },
+		Phases: map[string]func(context.Context, *task.Runtime, task.Checkpoint) error{
+			"wait": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Wait(ctx, []protocol.TaskID{3, 4}, "failFast", task.Checkpoint{"phase": "done"})
+			},
+			"done": func(ctx context.Context, rt *task.Runtime, cp task.Checkpoint) error {
+				return rt.Done(ctx, task.Outcome{Status: "completed"})
+			},
+		},
+	}
+	if err := task.Create(ctx, sess, failing, 3, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Create(ctx, sess, work, 4, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Create(ctx, sess, parent, 5, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	sched := &task.Scheduler{Session: sess, Defs: map[string]task.Definition{"app.failing": failing, "app.work": work, "app.parent": parent}}
+	// First pass: children run (3 fails, 4 stays running), parent waits failFast.
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Second pass: failFast sees child 3 failed, aborts 4, wakes parent.
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	child4, _ := sess.Task(ctx, 4)
+	if child4.State.Status != "terminal" || child4.State.Outcome == nil || child4.State.Outcome.Status != "aborted" {
+		t.Fatalf("child 4 aborted %#v", child4.State)
+	}
+	if err := sched.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	parentRec, _ := sess.Task(ctx, 5)
+	if parentRec.State.Status != "terminal" || parentRec.State.Outcome == nil || parentRec.State.Outcome.Status != "completed" {
+		t.Fatalf("parent completed %#v", parentRec.State)
+	}
+}

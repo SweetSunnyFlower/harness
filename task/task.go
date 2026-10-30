@@ -224,12 +224,38 @@ func (s *Scheduler) resumeOne(ctx context.Context, rec record.TaskRecord) error 
 	}
 	switch rec.State.Status {
 	case "pending", "running":
-		_, err := Run(ctx, s.Session, def, rec.ID)
+		_, err := runPhase(ctx, s.Session, def, &rec)
 		return err
 	case "waiting":
 		var on []protocol.TaskID
 		if err := json.Unmarshal(rec.State.On, &on); err != nil {
 			return err
+		}
+		if rec.State.Policy == "failFast" {
+			for _, id := range on {
+				child, err := s.Session.Task(ctx, id)
+				if err != nil {
+					return err
+				}
+				if child == nil {
+					return fmt.Errorf("task %d not found", id)
+				}
+				if child.State.Status != "terminal" && child.State.Status != "completing" {
+					continue
+				}
+				if child.State.Outcome == nil || (child.State.Outcome.Status != "failed" && child.State.Outcome.Status != "faulted") {
+					continue
+				}
+				for _, other := range on {
+					if other != id {
+						if err := s.abortOne(ctx, other); err != nil {
+							return err
+						}
+					}
+				}
+				return wake(ctx, s.Session, rec)
+			}
+			return nil
 		}
 		for _, id := range on {
 			child, err := s.Session.Task(ctx, id)
