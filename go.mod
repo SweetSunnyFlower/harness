@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/go-sql-driver/mysql v1.10.1
+	github.com/tetratelabs/wazero v1.12.0
 	modernc.org/sqlite v1.57.0
 )
 
